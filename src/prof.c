@@ -86,7 +86,7 @@ static ckh_t prof_log_thr2index;
 struct {
 	size_t used;
 	size_t max;
-	prof_log_bts *arr;
+	prof_bt_t *arr;
 } prof_log_bts;
 
 struct {
@@ -278,6 +278,10 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
     prof_tctx_t *tctx) {
 	prof_tctx_set(tsdn, ptr, usize, NULL, tctx);
 
+	nstime_t t = NSTIME_ZERO_INITIALIZER;
+	nstime_update(&t);
+	prof_alloc_time_set(tsdn, ptr, NULL, t);
+
 	malloc_mutex_lock(tsdn, tctx->tdata->lock);
 	tctx->cnts.curobjs++;
 	tctx->cnts.curbytes += usize;
@@ -290,15 +294,23 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
 }
 
 static void
-prof_add_to_log(tsd_t *tsd) {
+prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize) {
 	malloc_mutex_lock(tsd_tsdn(tsd), &prof_log_mtx);	
 	assert (prof_logging);
+
 	// TODO
+	nstime_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr,
+			          (alloc_ctx_t *)NULL);
+	nstime_t diff = NSTIME_ZERO_INITIALIZER;
+	nstime_update(&diff);
+	nstime_subtract(&diff, &alloc_time);
+
 	malloc_mutex_unlock(tsd_tsdn(tsd), &prof_log_mtx);	
 }
 
 void
-prof_free_sampled_object(tsd_t *tsd, size_t usize, prof_tctx_t *tctx) {
+prof_free_sampled_object(tsd_t *tsd, const void *ptr, size_t usize, 
+    prof_tctx_t *tctx) {
 	malloc_mutex_lock(tsd_tsdn(tsd), tctx->tdata->lock);
 	assert(tctx->cnts.curobjs > 0);
 	assert(tctx->cnts.curbytes >= usize);
@@ -306,7 +318,7 @@ prof_free_sampled_object(tsd_t *tsd, size_t usize, prof_tctx_t *tctx) {
 	tctx->cnts.curbytes -= usize;
 
 	if (prof_logging) {
-		prof_add_to_log(tsd);
+		prof_add_to_log(tsd, ptr, usize);
 	}
 
 	if (prof_tctx_should_destroy(tsd_tsdn(tsd), tctx)) {
