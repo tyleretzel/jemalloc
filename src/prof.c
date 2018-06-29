@@ -7,6 +7,7 @@
 #include "jemalloc/internal/hash.h"
 #include "jemalloc/internal/malloc_io.h"
 #include "jemalloc/internal/mutex.h"
+#include "jemalloc/internal/emitter.h"
 
 /******************************************************************************/
 
@@ -71,40 +72,52 @@ uint64_t	prof_interval = 0;
 size_t		lg_prof_sample;
 
 static bool prof_logging = false;
-/* NULL if prof_logging is false, defined if prof_logging is true. */
-static uint64_t prof_log_seq = 0;
-static char prof_log_filename[
+static uint64_t log_seq = 0;
+static char log_filename[
     /* Minimize memory bloat for non-prof builds. */
 #ifdef JEMALLOC_PROF
     PATH_MAX +
 #endif
     1];
 
-static ckh_t prof_log_bt2index;
-static ckh_t prof_log_thr2index;
+/* Created on prof_log_start and deleted on prof_log_stop. */
+static ckh_t log_bt2index;
+static ckh_t log_thr2index;
 
-struct {
-	size_t used;
-	size_t max;
-	prof_bt_t *arr;
-} prof_log_bts;
+/* Increment these when adding to the linked list. */
+static size_t log_bt_index = 0;
+static size_t log_thr_index = 0;
 
-struct {
-	size_t used;
-	size_t max;
-	/* This is an array of thread uids. */
-	uint64_t *arr;
-} prof_log_thrs;
+typedef struct prof_bt_node_s prof_bt_node_t;
 
-struct {
-	size_t used;
-	size_t max;
-	prof_alloc_metadata_t *arr;
-} prof_log_allocs;
+struct prof_bt_node_s {
+	prof_bt_t bt;
+	/* Variable size backtrace vector pointed to by bt. */
+	void *vec[1];
+	prof_bt_node_t *next;
+};
+
+typedef struct prof_thr_node_s prof_thr_node_t;
+
+struct prof_thr_node_s {
+	uint64_t thr_uid;
+	size_t thr_name_sz;
+	/* Variable size based on thr_name_sz. */
+	char name[1];
+	prof_thr_node_t *next;
+}; 
+
+/* Store linked lists for logged data. */
+static prof_bt_node_t *log_bt_first = NULL;
+static prof_thr_node_t *log_thr_first = NULL;
+static prof_bt_node_t *log_bt_last = NULL;
+static prof_thr_node_t *log_thr_last = NULL;
+static prof_alloc_metadata_t *log_alloc_first = NULL;
+static prof_alloc_metadata_t *log_alloc_last = NULL;
 
 
-/* Protects the prof_logging flag and any prof_log_{...}. */
-static malloc_mutex_t prof_log_mtx;
+/* Protects the prof_logging flag and any log_{...}. */
+static malloc_mutex_t log_mtx;
 
 /*
  * Table of mutexes that are shared among gctx's.  These are leaf locks, so
@@ -294,31 +307,39 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
 }
 
 static void
-prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize) {
-	malloc_mutex_lock(tsd_tsdn(tsd), &prof_log_mtx);	
-	assert (prof_logging);
+prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
+	assert(prof_logging);
+	malloc_mutex_assert_owner(tsd_tsdn(tsd), tctx->tdata->lock);
 
-	// TODO
+	malloc_mutex_lock(tsd_tsdn(tsd), &log_mtx);	
+
+	/* 
+	 * Lookup the allocation backtrace. Since we haven't destroyed tctx
+	 * yet, gctx should still be in a good state, so there's no need to
+	 * acquire tctx->gctx->lock.
+	 */
+	/* TODO */
+
 	nstime_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr,
 			          (alloc_ctx_t *)NULL);
-	nstime_t diff = NSTIME_ZERO_INITIALIZER;
-	nstime_update(&diff);
-	nstime_subtract(&diff, &alloc_time);
+	nstime_t free_time = NSTIME_ZERO_INITIALIZER;
+	nstime_update(&free_time);
 
-	malloc_mutex_unlock(tsd_tsdn(tsd), &prof_log_mtx);	
+	malloc_mutex_unlock(tsd_tsdn(tsd), &log_mtx);	
 }
 
 void
 prof_free_sampled_object(tsd_t *tsd, const void *ptr, size_t usize, 
     prof_tctx_t *tctx) {
 	malloc_mutex_lock(tsd_tsdn(tsd), tctx->tdata->lock);
+
 	assert(tctx->cnts.curobjs > 0);
 	assert(tctx->cnts.curbytes >= usize);
 	tctx->cnts.curobjs--;
 	tctx->cnts.curbytes -= usize;
 
 	if (prof_logging) {
-		prof_add_to_log(tsd, ptr, usize);
+		prof_add_to_log(tsd, ptr, usize, tctx);
 	}
 
 	if (prof_tctx_should_destroy(tsd_tsdn(tsd), tctx)) {
@@ -1947,6 +1968,19 @@ prof_bt_keycomp(const void *k1, const void *k2) {
 	return (memcmp(bt1->vec, bt2->vec, bt1->len * sizeof(void *)) == 0);
 }
 
+static void
+prof_thr_uid_hash(const void *key, size_t r_hash[2]) {
+	const uint64_t *thr_uid = (uint64_t *)key;
+	hash(thr_uid, sizeof(uint64_t), 0x94122f34U, r_hash);
+}
+
+static bool
+prof_thr_uid_keycomp(const void *k1, const void *k2) {
+	const uint64_t *thr_uid1 = (uint64_t *)k1;
+	const uint64_t *thr_uid2 = (uint64_t *)k2;
+	return *thr_uid1 == *thr_uid2;
+}
+
 static uint64_t
 prof_thr_uid_alloc(tsdn_t *tsdn) {
 	uint64_t thr_uid;
@@ -2183,30 +2217,80 @@ bool prof_log_start(tsdn_t *tsdn, const char *filename) {
 	bool ret = false;
 	size_t buf_size = PATH_MAX + 1;
 
-	malloc_mutex_lock(tsdn, &prof_log_mtx);
+	/* TODO: Is this a good conversion? */
+	tsd_t *tsd = tsdn_tsd(tsdn);
+
+	malloc_mutex_lock(tsdn, &log_mtx);
+
 	if (prof_logging) {
+		/* Already logging. */
 		ret = true;
 	} else if (filename == NULL) {
-		malloc_snprintf(prof_log_filename, buf_size,
-		    "%s.%d.%"FMTu64".json", opt_prof_prefix, prof_getpid(),
-		    prof_log_seq);
+		/* Make default name. */
+		malloc_snprintf(log_filename, buf_size, "%s.%d.%"FMTu64".json",
+		    opt_prof_prefix, prof_getpid(), log_seq);
+		log_seq++;
 		prof_logging = true;
 	} else if (strlen(filename) >= buf_size) {
 		ret = true;
 	} else {
-		strcpy(prof_log_filename, filename);
+		strcpy(log_filename, filename);
 		prof_logging = true;
 	}
-	malloc_mutex_unlock(tsdn, &prof_log_mtx);
+	malloc_mutex_unlock(tsdn, &log_mtx);
 
 	return ret;
 }
 
-void prof_emitter_write_cb(void *opaque, const char *to_write) {
+void prof_emitter_write_cb(void *fd_opaque, const char *to_write) {
+	int fd = *((int *)fd_opaque);
+	size_t bytes = strlen(to_write);
+	write(fd, (void *)to_write, bytes);
 }
 
 void prof_log_stop(tsdn_t *tsdn) {
-	malloc_printf("Called prof_log_stop!\n");
+	malloc_mutex_lock(tsdn, &log_mtx);
+
+	emitter_t emitter;
+
+	int fd = creat(log_filename, 0644);
+
+	/* TODO: This should probably notify mallctl of an error. */
+	if (fd == -1) {
+		malloc_mutex_unlock(tsdn, &log_mtx);
+		return;
+	}
+
+	emitter_init(&emitter, emitter_output_json, &prof_emitter_write_cb,
+	    (void *)(&fd));
+
+	emitter_json_arr_obj_begin(&emitter);
+
+	/* Emit threads. */
+	emitter_json_arr_begin(&emitter, "threads");
+
+
+	emitter_json_arr_end(&emitter);
+
+	/* Emit stack traces. */
+	emitter_json_arr_begin(&emitter, "stack_traces");
+
+
+	emitter_json_arr_end(&emitter);
+
+
+	/* Emit allocations. */
+	emitter_json_arr_begin(&emitter, "allocations");
+
+
+	emitter_json_arr_end(&emitter);
+
+	emitter_json_arr_obj_end(&emitter);
+
+	/* TODO: Is it okay to do this conversion? When is tsdn NULL? */
+	ckh_delete(tsdn_tsd(tsdn), &log_bt2index);
+	ckh_delete(tsdn_tsd(tsdn), &log_thr2index);
+	malloc_mutex_unlock(tsdn, &log_mtx);
 }
 
 const char *
@@ -2443,6 +2527,21 @@ prof_boot2(tsd_t *tsd) {
 			if (opt_abort) {
 				abort();
 			}
+		}
+
+		if (malloc_mutex_init(&log_mtx, "prof_log",
+		    WITNESS_RANK_PROF_LOG, malloc_mutex_rank_exclusive)) {
+			return true;
+		}
+
+		if (ckh_new(tsd, &log_bt2index, PROF_CKH_MINITEMS, prof_bt_hash,
+		    prof_bt_keycomp)) {
+			return true;
+		}
+
+		if (ckh_new(tsd, &log_thr2index, PROF_CKH_MINITEMS,
+		    prof_thr_uid_hash, prof_thr_uid_keycomp)) {
+			return true;
 		}
 
 		gctx_locks = (malloc_mutex_t *)base_alloc(tsd_tsdn(tsd),
