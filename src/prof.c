@@ -70,6 +70,42 @@ uint64_t	prof_interval = 0;
 
 size_t		lg_prof_sample;
 
+static bool prof_logging = false;
+/* NULL if prof_logging is false, defined if prof_logging is true. */
+static uint64_t prof_log_seq = 0;
+static char prof_log_filename[
+    /* Minimize memory bloat for non-prof builds. */
+#ifdef JEMALLOC_PROF
+    PATH_MAX +
+#endif
+    1];
+
+static ckh_t prof_log_bt2index;
+static ckh_t prof_log_thr2index;
+
+struct {
+	size_t used;
+	size_t max;
+	prof_log_bts *arr;
+} prof_log_bts;
+
+struct {
+	size_t used;
+	size_t max;
+	/* This is an array of thread uids. */
+	uint64_t *arr;
+} prof_log_thrs;
+
+struct {
+	size_t used;
+	size_t max;
+	prof_alloc_metadata_t *arr;
+} prof_log_allocs;
+
+
+/* Protects the prof_logging flag and any prof_log_{...}. */
+static malloc_mutex_t prof_log_mtx;
+
 /*
  * Table of mutexes that are shared among gctx's.  These are leaf locks, so
  * there is no problem with using them for more than one gctx at the same time.
@@ -253,6 +289,14 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
 	malloc_mutex_unlock(tsdn, tctx->tdata->lock);
 }
 
+static void
+prof_add_to_log(tsd_t *tsd) {
+	malloc_mutex_lock(tsd_tsdn(tsd), &prof_log_mtx);	
+	assert (prof_logging);
+	// TODO
+	malloc_mutex_unlock(tsd_tsdn(tsd), &prof_log_mtx);	
+}
+
 void
 prof_free_sampled_object(tsd_t *tsd, size_t usize, prof_tctx_t *tctx) {
 	malloc_mutex_lock(tsd_tsdn(tsd), tctx->tdata->lock);
@@ -260,6 +304,10 @@ prof_free_sampled_object(tsd_t *tsd, size_t usize, prof_tctx_t *tctx) {
 	assert(tctx->cnts.curbytes >= usize);
 	tctx->cnts.curobjs--;
 	tctx->cnts.curbytes -= usize;
+
+	if (prof_logging) {
+		prof_add_to_log(tsd);
+	}
 
 	if (prof_tctx_should_destroy(tsd_tsdn(tsd), tctx)) {
 		prof_tctx_destroy(tsd, tctx);
@@ -2117,6 +2165,36 @@ prof_active_set(tsdn_t *tsdn, bool active) {
 	prof_active = active;
 	malloc_mutex_unlock(tsdn, &prof_active_mtx);
 	return prof_active_old;
+}
+
+bool prof_log_start(tsdn_t *tsdn, const char *filename) {
+	bool ret = false;
+	size_t buf_size = PATH_MAX + 1;
+
+	malloc_mutex_lock(tsdn, &prof_log_mtx);
+	if (prof_logging) {
+		ret = true;
+	} else if (filename == NULL) {
+		malloc_snprintf(prof_log_filename, buf_size,
+		    "%s.%d.%"FMTu64".json", opt_prof_prefix, prof_getpid(),
+		    prof_log_seq);
+		prof_logging = true;
+	} else if (strlen(filename) >= buf_size) {
+		ret = true;
+	} else {
+		strcpy(prof_log_filename, filename);
+		prof_logging = true;
+	}
+	malloc_mutex_unlock(tsdn, &prof_log_mtx);
+
+	return ret;
+}
+
+void prof_emitter_write_cb(void *opaque, const char *to_write) {
+}
+
+void prof_log_stop(tsdn_t *tsdn) {
+	malloc_printf("Called prof_log_stop!\n");
 }
 
 const char *

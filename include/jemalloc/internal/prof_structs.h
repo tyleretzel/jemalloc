@@ -198,4 +198,20 @@ struct prof_tdata_s {
 };
 typedef rb_tree(prof_tdata_t) prof_tdata_tree_t;
 
+/* This is output when logging sampled allocations. */
+struct prof_alloc_metadata_s {
+	/* Indices into an array of thread data. */
+	size_t alloc_thr_ind;
+	size_t free_thr_ind;
+
+	/* Indices into an array of backtraces. */
+	size_t alloc_bt_ind;
+	size_t free_bt_ind;
+
+	uint64_t alloc_time_ns;
+	uint64_t free_time_ns;
+
+	size_t usize;
+};
+
 #endif /* JEMALLOC_INTERNAL_PROF_STRUCTS_H */
