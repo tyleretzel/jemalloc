@@ -80,10 +80,6 @@ static char log_filename[
 #endif
     1];
 
-/* Created on prof_log_start and deleted on prof_log_stop. */
-static ckh_t log_bt2index;
-static ckh_t log_thr2index;
-
 /* Increment these when adding to the linked list. */
 static size_t log_bt_index = 0;
 static size_t log_thr_index = 0;
@@ -91,30 +87,55 @@ static size_t log_thr_index = 0;
 typedef struct prof_bt_node_s prof_bt_node_t;
 
 struct prof_bt_node_s {
+	prof_bt_node_t *next;
+	size_t index;
 	prof_bt_t bt;
 	/* Variable size backtrace vector pointed to by bt. */
 	void *vec[1];
-	prof_bt_node_t *next;
 };
 
 typedef struct prof_thr_node_s prof_thr_node_t;
 
 struct prof_thr_node_s {
+	prof_thr_node_t *next;
+	size_t index;
 	uint64_t thr_uid;
 	size_t thr_name_sz;
 	/* Variable size based on thr_name_sz. */
 	char name[1];
-	prof_thr_node_t *next;
 }; 
+
+typedef struct prof_alloc_node_s prof_alloc_node_t;
+
+/* This is output when logging sampled allocations. */
+struct prof_alloc_node_s {
+	prof_alloc_node_t *next;
+	/* Indices into an array of thread data. */
+	size_t alloc_thr_ind;
+	size_t free_thr_ind;
+
+	/* Indices into an array of backtraces. */
+	size_t alloc_bt_ind;
+	size_t free_bt_ind;
+
+	uint64_t alloc_time_ns;
+	uint64_t free_time_ns;
+
+	size_t usize;
+};
+
+/* Created on prof_log_start and deleted on prof_log_stop. */
+static bool log_tables_initialized = false;
+static ckh_t log_bt_node_set;
+static ckh_t log_thr_node_set;
 
 /* Store linked lists for logged data. */
 static prof_bt_node_t *log_bt_first = NULL;
-static prof_thr_node_t *log_thr_first = NULL;
 static prof_bt_node_t *log_bt_last = NULL;
+static prof_thr_node_t *log_thr_first = NULL;
 static prof_thr_node_t *log_thr_last = NULL;
-static prof_alloc_metadata_t *log_alloc_first = NULL;
-static prof_alloc_metadata_t *log_alloc_last = NULL;
-
+static prof_alloc_node_t *log_alloc_first = NULL;
+static prof_alloc_node_t *log_alloc_last = NULL;
 
 /* Protects the prof_logging flag and any log_{...}. */
 static malloc_mutex_t log_mtx;
@@ -193,6 +214,10 @@ static bool	prof_tdata_should_destroy(tsdn_t *tsdn, prof_tdata_t *tdata,
 static void	prof_tdata_destroy(tsd_t *tsd, prof_tdata_t *tdata,
     bool even_if_attached);
 static char	*prof_thread_name_alloc(tsdn_t *tsdn, const char *thread_name);
+static void prof_thr_node_hash(const void *key, size_t r_hash[2]);
+static bool prof_thr_node_keycomp(const void *k1, const void *k2);
+static void prof_bt_node_hash(const void *key, size_t r_hash[2]);
+static bool prof_bt_node_keycomp(const void *k1, const void *k2);
 
 /******************************************************************************/
 /* Red-black trees. */
@@ -306,6 +331,44 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
 	malloc_mutex_unlock(tsdn, tctx->tdata->lock);
 }
 
+static size_t
+prof_log_get_bt_index(tsd_t *tsd, prof_bt_t *bt) {
+	assert(prof_logging);
+	malloc_mutex_assert_owner(tsd_tsdn(tsd), &log_mtx);
+
+	/* 
+	 * Lookup the allocation backtrace. Since we haven't destroyed tctx
+	 * yet, gctx should still be in a good state, so there's no need to
+	 * acquire tctx->gctx->lock.
+	 */
+	prof_bt_node_t dummy_node;
+	dummy_node.bt = *bt;
+	prof_bt_node_t *node;
+	if (ckh_search(&log_bt_node_set, (void *)(&dummy_node),
+	    (void **)(&node), NULL)) {
+		/* Add this stack trace to the table. */
+		size_t sz = offsetof(prof_bt_node_t, vec) +
+			        (bt->len * sizeof(void *));
+		prof_bt_node_t *new_node = (prof_bt_node_t *)
+			ialloc(tsd, sz, sz_size2index(sz), false, true);
+		if (log_bt_first == NULL) {
+			log_bt_first = new_node;
+			log_bt_last = new_node;
+		} else {
+			log_bt_last->next = new_node;
+		}
+		/* Copy the backtrace. */
+
+		new_node->next = NULL;
+		new_node->index = log_bt_index;
+		new_node->bt.len = bt->len;
+		memcpy(new_node->vec, bt->vec, bt->len * sizeof(void *));
+		new_node->bt.vec = new_node->vec;
+
+		log_bt_index++;
+	}
+}
+
 static void
 prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 	assert(prof_logging);
@@ -313,18 +376,35 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 
 	malloc_mutex_lock(tsd_tsdn(tsd), &log_mtx);	
 
+	if (!log_tables_initialized) {
+		bool err1 = ckh_new(tsd, &log_bt_node_set, PROF_CKH_MINITEMS,
+				prof_bt_node_hash, prof_bt_node_keycomp);
+		bool err2 = ckh_new(tsd, &log_thr_node_set, PROF_CKH_MINITEMS,
+				prof_thr_node_hash, prof_thr_node_keycomp);
+		if (err1 || err2) {
+			goto label_done;
+		}
+		log_tables_initialized = true;
+	}
 	/* 
 	 * Lookup the allocation backtrace. Since we haven't destroyed tctx
 	 * yet, gctx should still be in a good state, so there's no need to
 	 * acquire tctx->gctx->lock.
 	 */
-	/* TODO */
+	prof_bt_node_t dummy_node;
+	dummy_node.bt = tctx->gctx->bt;
+	prof_bt_node_t *node;
+	if (ckh_search(&log_bt_node_set, (void *)(&dummy_node),
+	    (void **)(&node), NULL)) {
+		/* Add this stack trace to the table. */
+	}
 
 	nstime_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr,
 			          (alloc_ctx_t *)NULL);
 	nstime_t free_time = NSTIME_ZERO_INITIALIZER;
 	nstime_update(&free_time);
 
+label_done:
 	malloc_mutex_unlock(tsd_tsdn(tsd), &log_mtx);	
 }
 
@@ -1969,16 +2049,30 @@ prof_bt_keycomp(const void *k1, const void *k2) {
 }
 
 static void
-prof_thr_uid_hash(const void *key, size_t r_hash[2]) {
-	const uint64_t *thr_uid = (uint64_t *)key;
-	hash(thr_uid, sizeof(uint64_t), 0x94122f34U, r_hash);
+prof_bt_node_hash(const void *key, size_t r_hash[2]) {
+	const prof_bt_node_t *bt_node = (prof_bt_node_t *)key;
+	prof_bt_hash((void *)(&bt_node->bt), r_hash);
 }
 
 static bool
-prof_thr_uid_keycomp(const void *k1, const void *k2) {
-	const uint64_t *thr_uid1 = (uint64_t *)k1;
-	const uint64_t *thr_uid2 = (uint64_t *)k2;
-	return *thr_uid1 == *thr_uid2;
+prof_bt_node_keycomp(const void *k1, const void *k2) {
+	const prof_bt_node_t *bt_node1 = (prof_bt_node_t *)k1;
+	const prof_bt_node_t *bt_node2 = (prof_bt_node_t *)k2;
+	return prof_bt_keycomp((void *)(&bt_node1->bt),
+	    (void *)(&bt_node2->bt));
+}
+
+static void
+prof_thr_node_hash(const void *key, size_t r_hash[2]) {
+	const prof_thr_node_t *thr_node = (prof_thr_node_t *)key;
+	hash(&thr_node->thr_uid, sizeof(uint64_t), 0x94122f35U, r_hash);
+}
+
+static bool
+prof_thr_node_keycomp(const void *k1, const void *k2) {
+	const prof_thr_node_t *thr_node1 = (prof_thr_node_t *)k1;
+	const prof_thr_node_t *thr_node2 = (prof_thr_node_t *)k2;
+	return thr_node1->thr_uid == thr_node2->thr_uid;
 }
 
 static uint64_t
@@ -2217,9 +2311,6 @@ bool prof_log_start(tsdn_t *tsdn, const char *filename) {
 	bool ret = false;
 	size_t buf_size = PATH_MAX + 1;
 
-	/* TODO: Is this a good conversion? */
-	tsd_t *tsd = tsdn_tsd(tsdn);
-
 	malloc_mutex_lock(tsdn, &log_mtx);
 
 	if (prof_logging) {
@@ -2268,28 +2359,71 @@ void prof_log_stop(tsdn_t *tsdn) {
 
 	/* Emit threads. */
 	emitter_json_arr_begin(&emitter, "threads");
-
-
+	prof_thr_node_t *thr_node = log_thr_first;
+	while (thr_node != NULL) {
+		emitter_json_arr_obj_begin(&emitter);
+		emitter_json_kv(&emitter, "thr_uid", emitter_type_uint64,
+		    &thr_node->thr_uid);
+		emitter_json_kv(&emitter, "thr_name", emitter_type_string,
+		    &thr_node->name);
+		emitter_json_arr_obj_end(&emitter);
+		thr_node = thr_node->next;
+		idalloc(tsdn_tsd(tsdn), thr_node);
+	}
 	emitter_json_arr_end(&emitter);
 
 	/* Emit stack traces. */
 	emitter_json_arr_begin(&emitter, "stack_traces");
-
-
+	prof_bt_node_t *bt_node = log_bt_first;
+	/* 
+	 * Calculate how many hex digits we need: twice number of bytes, two for
+	 * "0x", and then one more for terminating '\0'.
+	 */
+	size_t buf_sz = 2 * sizeof(intptr_t) + 3;
+	char buf[buf_sz];
+	while (bt_node != NULL) {
+		emitter_json_arr_begin(&emitter, "trace");
+		size_t i;
+		for (i = 0; i < bt_node->bt.len; i++) {
+			malloc_snprintf(buf, buf_sz, "%p", bt_node->bt.vec[i]);
+			emitter_json_kv(&emitter, "trace", emitter_type_string,
+			    buf);
+		}
+		emitter_json_arr_end(&emitter);
+		bt_node = bt_node->next;
+		idalloc(tsdn_tsd(tsdn), bt_node);
+	}
 	emitter_json_arr_end(&emitter);
-
 
 	/* Emit allocations. */
 	emitter_json_arr_begin(&emitter, "allocations");
-
-
+	prof_alloc_node_t *alloc_node = log_alloc_first;
+	while (alloc_node != NULL) {
+		emitter_json_arr_obj_begin(&emitter);
+		emitter_json_kv(&emitter, "alloc_thread", emitter_type_size,
+		    &alloc_node->alloc_thr_ind);
+		emitter_json_kv(&emitter, "free_thread", emitter_type_size,
+		    &alloc_node->free_thr_ind);
+		emitter_json_kv(&emitter, "alloc_trace", emitter_type_size,
+		    &alloc_node->alloc_bt_ind);
+		emitter_json_kv(&emitter, "free_trace", emitter_type_size,
+		    &alloc_node->free_bt_ind);
+		emitter_json_kv(&emitter, "alloc_timestamp",
+		    emitter_type_uint64, &alloc_node->alloc_time_ns);
+		emitter_json_kv(&emitter, "free_timestamp",
+		    emitter_type_uint64, &alloc_node->free_time_ns);
+		emitter_json_arr_obj_end(&emitter);
+		idalloc(tsdn_tsd(tsdn), bt_node);
+	}
+		
 	emitter_json_arr_end(&emitter);
 
 	emitter_json_arr_obj_end(&emitter);
 
-	/* TODO: Is it okay to do this conversion? When is tsdn NULL? */
-	ckh_delete(tsdn_tsd(tsdn), &log_bt2index);
-	ckh_delete(tsdn_tsd(tsdn), &log_thr2index);
+	ckh_delete(tsdn_tsd(tsdn), &log_bt_node_set);
+	ckh_delete(tsdn_tsd(tsdn), &log_thr_node_set);
+	log_tables_initialized = false;
+
 	malloc_mutex_unlock(tsdn, &log_mtx);
 }
 
@@ -2534,15 +2668,17 @@ prof_boot2(tsd_t *tsd) {
 			return true;
 		}
 
-		if (ckh_new(tsd, &log_bt2index, PROF_CKH_MINITEMS, prof_bt_hash,
-		    prof_bt_keycomp)) {
+		if (ckh_new(tsd, &log_bt_node_set, PROF_CKH_MINITEMS,
+		    prof_bt_node_hash, prof_bt_node_keycomp)) {
 			return true;
 		}
 
-		if (ckh_new(tsd, &log_thr2index, PROF_CKH_MINITEMS,
-		    prof_thr_uid_hash, prof_thr_uid_keycomp)) {
+		if (ckh_new(tsd, &log_thr_node_set, PROF_CKH_MINITEMS,
+		    prof_thr_node_hash, prof_thr_node_keycomp)) {
 			return true;
 		}
+
+		log_tables_initialized = true;
 
 		gctx_locks = (malloc_mutex_t *)base_alloc(tsd_tsdn(tsd),
 		    b0get(), PROF_NCTX_LOCKS * sizeof(malloc_mutex_t),
