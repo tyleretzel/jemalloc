@@ -371,8 +371,7 @@ prof_log_bt_index(tsd_t *tsd, prof_bt_t *bt) {
 	} else {
 		return node->index;
 	}
-}
-
+} 
 static size_t
 prof_log_thr_index(tsd_t *tsd, uint64_t thr_uid, const char *name) {
 	assert(prof_logging);
@@ -479,6 +478,7 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 		log_alloc_last = new_node;
 	} else {
 		log_alloc_last->next = new_node;
+		log_alloc_last = new_node;
 	}
 
 label_done:
@@ -2509,8 +2509,10 @@ void prof_log_stop(tsdn_t *tsdn) {
 	emitter_json_arr_obj_end(&emitter);
 
 	/* Reset all global state. */
-	ckh_delete(tsdn_tsd(tsdn), &log_bt_node_set);
-	ckh_delete(tsdn_tsd(tsdn), &log_thr_node_set);
+	if (log_tables_initialized) {
+		ckh_delete(tsdn_tsd(tsdn), &log_bt_node_set);
+		ckh_delete(tsdn_tsd(tsdn), &log_thr_node_set);
+	}
 	log_tables_initialized = false;
 	log_bt_index = 0;
 	log_thr_index = 0;
