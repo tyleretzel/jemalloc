@@ -39,6 +39,7 @@ bool		opt_prof_gdump = false;
 bool		opt_prof_final = false;
 bool		opt_prof_leak = false;
 bool		opt_prof_accum = false;
+bool		opt_prof_log = false;
 char		opt_prof_prefix[
     /* Minimize memory bloat for non-prof builds. */
 #ifdef JEMALLOC_PROF
@@ -2416,8 +2417,19 @@ void prof_emitter_write_cb(void *fd_opaque, const char *to_write) {
 	write(fd, (void *)to_write, bytes);
 }
 
+/* Used as an atexit function to automatically stop logging. */
+void prof_log_stop_final(void) {
+	tsd_t *tsd = tsd_fetch();
+	prof_log_stop(tsd_tsdn(tsd));
+}
+
 void prof_log_stop(tsdn_t *tsdn) {
 	malloc_mutex_lock(tsdn, &log_mtx);
+
+	if (!prof_logging) {
+		malloc_mutex_unlock(tsdn, &log_mtx);
+		return;
+	}
 
 	emitter_t emitter;
 
@@ -2426,6 +2438,8 @@ void prof_log_stop(tsdn_t *tsdn) {
 	/* TODO: This should probably notify mallctl of an error. */
 	if (fd == -1) {
 		malloc_mutex_unlock(tsdn, &log_mtx);
+		malloc_printf("<jemalloc>: creat() for log file \"%s\" failed "
+			      "with %d\n", log_filename, errno);
 		return;
 	}
 
@@ -2757,6 +2771,19 @@ prof_boot2(tsd_t *tsd) {
 		if (opt_prof_final && opt_prof_prefix[0] != '\0' &&
 		    atexit(prof_fdump) != 0) {
 			malloc_write("<jemalloc>: Error in atexit()\n");
+			if (opt_abort) {
+				abort();
+			}
+		}
+
+		if (opt_prof_log) {
+			/* Start logging right away. */
+			prof_log_start(tsd_tsdn(tsd), NULL);
+		}
+
+		if (atexit(prof_log_stop_final) != 0) {
+			malloc_write("<jemalloc>: Error in atexit() "
+				     "for logging\n");
 			if (opt_abort) {
 				abort();
 			}
