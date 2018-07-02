@@ -2678,7 +2678,10 @@ prof_log_stop_ctl(tsd_t *tsd, const size_t *mib, size_t miblen, void *oldp,
 		return ENOENT;
 	}
 
-	prof_log_stop(tsd_tsdn(tsd));
+	if (prof_log_stop(tsd_tsdn(tsd))) {
+		return EFAULT;
+	}
+
 	return 0;
 }
 

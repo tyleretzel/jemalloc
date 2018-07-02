@@ -420,9 +420,9 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 	prof_tdata_t *cons_tdata = prof_tdata_get(tsd, false);
 	if (cons_tdata == NULL) {
 		/*
-		 * TODO: We decide not to log this for now. This only happens
-		 * when the current thread is in a weird state (e.g. it's being
-		 * destroyed). To fix this, add thread info to extent_t.
+		 * We decide not to log these allocations. cons_tdata will be
+		 * NULL only when the current thread is in a weird state (e.g.
+		 * it's being destroyed).
 		 */
 		return;
 	}	
@@ -448,7 +448,7 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 	prof_alloc_node_t *new_node = (prof_alloc_node_t *)
 		ialloc(tsd, sizeof(prof_alloc_node_t),
 		    sz_size2index(sizeof(prof_alloc_node_t)), false, true);
-
+ 
 	const char *prod_thr_name = (tctx->tdata->thread_name == NULL)?
 				        "" : tctx->tdata->thread_name;
 	const char *cons_thr_name = prof_thread_name_get(tsd);
@@ -2423,32 +2423,7 @@ void prof_log_stop_final(void) {
 	prof_log_stop(tsd_tsdn(tsd));
 }
 
-void prof_log_stop(tsdn_t *tsdn) {
-	malloc_mutex_lock(tsdn, &log_mtx);
-
-	if (!prof_logging) {
-		malloc_mutex_unlock(tsdn, &log_mtx);
-		return;
-	}
-
-	emitter_t emitter;
-
-	int fd = creat(log_filename, 0644);
-
-	/* TODO: This should probably notify mallctl of an error. */
-	if (fd == -1) {
-		malloc_mutex_unlock(tsdn, &log_mtx);
-		malloc_printf("<jemalloc>: creat() for log file \"%s\" failed "
-			      "with %d\n", log_filename, errno);
-		return;
-	}
-
-	emitter_init(&emitter, emitter_output_json, &prof_emitter_write_cb,
-	    (void *)(&fd));
-
-	emitter_json_arr_obj_begin(&emitter);
-
-	/* Emit threads. */
+static void prof_log_emit_threads(emitter_t *emitter) {
 	emitter_json_arr_begin(&emitter, "threads");
 	prof_thr_node_t *thr_node = log_thr_first;
 	prof_thr_node_t *thr_old_node;
@@ -2465,8 +2440,9 @@ void prof_log_stop(tsdn_t *tsdn) {
 		idalloc(tsdn_tsd(tsdn), thr_old_node);
 	}
 	emitter_json_arr_end(&emitter);
+}
 
-	/* Emit stack traces. */
+static void prof_log_emit_traces(emitter_t *emitter) {
 	emitter_json_arr_begin(&emitter, "stack_traces");
 	prof_bt_node_t *bt_node = log_bt_first;
 	prof_bt_node_t *bt_old_node; 
@@ -2492,8 +2468,9 @@ void prof_log_stop(tsdn_t *tsdn) {
 		idalloc(tsdn_tsd(tsdn), bt_old_node);
 	}
 	emitter_json_arr_end(&emitter);
+}
 
-	/* Emit allocations. */
+static void prof_log_emit_allocs(emitter_t *emitter) {
 	emitter_json_arr_begin(&emitter, "allocations");
 	prof_alloc_node_t *alloc_node = log_alloc_first;
 	prof_alloc_node_t *alloc_old_node;
@@ -2517,9 +2494,40 @@ void prof_log_stop(tsdn_t *tsdn) {
 		alloc_node = alloc_node->next;
 		idalloc(tsdn_tsd(tsdn), alloc_old_node);
 	}
-		
 	emitter_json_arr_end(&emitter);
+}
 
+bool prof_log_stop(tsdn_t *tsdn) {
+	malloc_mutex_lock(tsdn, &log_mtx);
+
+	if (!prof_logging) {
+		malloc_mutex_unlock(tsdn, &log_mtx);
+		return true;
+	}
+
+	emitter_t emitter;
+
+	/* Create a file. */
+	int fd = creat(log_filename, 0644);
+
+	if (fd == -1) {
+		malloc_printf("<jemalloc>: creat() for log file \"%s\" "
+			      " failed with %d\n", log_filename, errno);
+		malloc_mutex_unlock(tsdn, &log_mtx);
+		if (opt_abort) {
+			abort();
+		}
+		return true;
+	}
+
+	/* Do emitting to json file. */
+	emitter_init(&emitter, emitter_output_json, &prof_emitter_write_cb,
+	    (void *)(&fd));
+
+	emitter_json_arr_obj_begin(&emitter);
+	prof_log_emit_threads(&emitter);
+	prof_log_emit_traces(&emitter);
+	prof_log_emit_allocs(&emitter);
 	emitter_json_arr_obj_end(&emitter);
 
 	/* Reset all global state. */
@@ -2536,8 +2544,11 @@ void prof_log_stop(tsdn_t *tsdn) {
 	log_thr_last = NULL;
 	log_alloc_first = NULL;
 	log_alloc_last = NULL;
+	prof_logging = false;
 
 	malloc_mutex_unlock(tsdn, &log_mtx);
+
+	return close(fd);
 }
 
 const char *
