@@ -100,7 +100,6 @@ struct prof_thr_node_s {
 	prof_thr_node_t *next;
 	size_t index;
 	uint64_t thr_uid;
-	size_t thr_name_sz;
 	/* Variable size based on thr_name_sz. */
 	char name[1];
 }; 
@@ -332,7 +331,7 @@ prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
 }
 
 static size_t
-prof_log_get_bt_index(tsd_t *tsd, prof_bt_t *bt) {
+prof_log_bt_index(tsd_t *tsd, prof_bt_t *bt) {
 	assert(prof_logging);
 	malloc_mutex_assert_owner(tsd_tsdn(tsd), &log_mtx);
 
@@ -356,6 +355,7 @@ prof_log_get_bt_index(tsd_t *tsd, prof_bt_t *bt) {
 			log_bt_last = new_node;
 		} else {
 			log_bt_last->next = new_node;
+			log_bt_last = new_node;
 		}
 		/* Copy the backtrace. */
 
@@ -366,6 +366,49 @@ prof_log_get_bt_index(tsd_t *tsd, prof_bt_t *bt) {
 		new_node->bt.vec = new_node->vec;
 
 		log_bt_index++;
+		ckh_insert(tsd, &log_bt_node_set, (void *)new_node, NULL);
+		return new_node->index;
+	} else {
+		return node->index;
+	}
+}
+
+static size_t
+prof_log_thr_index(tsd_t *tsd, uint64_t thr_uid, const char *name) {
+	assert(prof_logging);
+	malloc_mutex_assert_owner(tsd_tsdn(tsd), &log_mtx);
+
+	/* 
+	 * Lookup the allocation backtrace. Since we haven't destroyed tctx
+	 * yet, gctx should still be in a good state, so there's no need to
+	 * acquire tctx->gctx->lock.
+	 */
+	prof_thr_node_t dummy_node;
+	dummy_node.thr_uid = thr_uid;
+	prof_thr_node_t *node;
+	if (ckh_search(&log_thr_node_set, (void *)(&dummy_node),
+	    (void **)(&node), NULL)) {
+		size_t sz = offsetof(prof_thr_node_t, name) + strlen(name) + 1;
+		prof_thr_node_t *new_node = (prof_thr_node_t *)
+			ialloc(tsd, sz, sz_size2index(sz), false, true);
+		if (log_thr_first == NULL) {
+			log_thr_first = new_node;
+			log_thr_last = new_node;
+		} else {
+			log_thr_last->next = new_node;
+			log_thr_last = new_node;
+		}
+
+		new_node->next = NULL;
+		new_node->index = log_thr_index;
+		new_node->thr_uid = thr_uid;
+		strcpy(new_node->name, name);
+
+		log_thr_index++;
+		ckh_insert(tsd, &log_thr_node_set, (void *)new_node, NULL);
+		return new_node->index;
+	} else {
+		return node->index;
 	}
 }
 
@@ -374,7 +417,17 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 	assert(prof_logging);
 	malloc_mutex_assert_owner(tsd_tsdn(tsd), tctx->tdata->lock);
 
-	malloc_mutex_lock(tsd_tsdn(tsd), &log_mtx);	
+	prof_tdata_t *cons_tdata = prof_tdata_get(tsd, false);
+	if (cons_tdata == NULL) {
+		/*
+		 * TODO: We decide not to log this for now. This only happens
+		 * when the current thread is in a weird state (e.g. it's being
+		 * destroyed). To fix this, add thread info to extent_t.
+		 */
+		return;
+	}	
+
+	malloc_mutex_lock(tsd_tsdn(tsd), &log_mtx);
 
 	if (!log_tables_initialized) {
 		bool err1 = ckh_new(tsd, &log_bt_node_set, PROF_CKH_MINITEMS,
@@ -386,23 +439,47 @@ prof_add_to_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 		}
 		log_tables_initialized = true;
 	}
-	/* 
-	 * Lookup the allocation backtrace. Since we haven't destroyed tctx
-	 * yet, gctx should still be in a good state, so there's no need to
-	 * acquire tctx->gctx->lock.
-	 */
-	prof_bt_node_t dummy_node;
-	dummy_node.bt = tctx->gctx->bt;
-	prof_bt_node_t *node;
-	if (ckh_search(&log_bt_node_set, (void *)(&dummy_node),
-	    (void **)(&node), NULL)) {
-		/* Add this stack trace to the table. */
-	}
 
 	nstime_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr,
 			          (alloc_ctx_t *)NULL);
 	nstime_t free_time = NSTIME_ZERO_INITIALIZER;
 	nstime_update(&free_time);
+
+	prof_alloc_node_t *new_node = (prof_alloc_node_t *)
+		ialloc(tsd, sizeof(prof_alloc_node_t),
+		    sz_size2index(sizeof(prof_alloc_node_t)), false, true);
+
+	const char *prod_thr_name = (tctx->tdata->thread_name == NULL)?
+				        "" : tctx->tdata->thread_name;
+	const char *cons_thr_name = prof_thread_name_get(tsd);
+
+	prof_bt_t bt;
+	bt_init(&bt, cons_tdata->vec);
+	prof_backtrace(&bt);
+	prof_bt_t *cons_bt = &bt;
+	/* 
+	 * Since we haven't destroyed tctx yet, gctx should still be in a good
+	 * state, so there's no need to acquire tctx->gctx->lock.
+	 */
+	prof_bt_t *prod_bt = &tctx->gctx->bt;
+
+	new_node->next = NULL;
+	new_node->alloc_thr_ind = prof_log_thr_index(tsd, tctx->tdata->thr_uid,
+				      prod_thr_name);
+	new_node->free_thr_ind = prof_log_thr_index(tsd, cons_tdata->thr_uid,
+				     cons_thr_name);
+	new_node->alloc_bt_ind = prof_log_bt_index(tsd, prod_bt);
+	new_node->free_bt_ind = prof_log_bt_index(tsd, cons_bt);
+	new_node->alloc_time_ns = nstime_ns(&alloc_time);
+	new_node->free_time_ns = nstime_ns(&free_time);
+	new_node->usize = usize;
+
+	if (log_alloc_first == NULL) {
+		log_alloc_first = new_node;
+		log_alloc_last = new_node;
+	} else {
+		log_alloc_last->next = new_node;
+	}
 
 label_done:
 	malloc_mutex_unlock(tsd_tsdn(tsd), &log_mtx);	
