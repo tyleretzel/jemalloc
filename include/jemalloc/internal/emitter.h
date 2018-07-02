@@ -390,6 +390,26 @@ emitter_json_arr_end(emitter_t *emitter) {
 }
 
 static inline void
+emitter_json_array_begin(emitter_t *emitter) {
+	if (emitter->output == emitter_output_json) {
+		emitter_json_key_prefix(emitter);
+		emitter_printf(emitter, "[");
+		emitter_nest_inc(emitter);
+	}
+}
+
+static inline void
+emitter_json_array_end(emitter_t *emitter) {
+	if (emitter->output == emitter_output_json) {
+		assert(emitter->nesting_depth > 0);
+		emitter_nest_dec(emitter);
+		emitter_printf(emitter, "\n");
+		emitter_indent(emitter);
+		emitter_printf(emitter, "]");
+	}
+}
+
+static inline void
 emitter_json_arr_obj_begin(emitter_t *emitter) {
 	if (emitter->output == emitter_output_json) {
 		emitter_json_key_prefix(emitter);
@@ -416,6 +436,7 @@ emitter_json_arr_value(emitter_t *emitter, emitter_type_t value_type,
 		emitter_json_key_prefix(emitter);
 		emitter_print_value(emitter, emitter_justify_none, -1,
 		    value_type, value);
+		emitter->item_at_depth = true;
 	}
 }
 

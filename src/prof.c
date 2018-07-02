@@ -2437,21 +2437,25 @@ void prof_log_stop(tsdn_t *tsdn) {
 	/* Emit threads. */
 	emitter_json_arr_begin(&emitter, "threads");
 	prof_thr_node_t *thr_node = log_thr_first;
+	prof_thr_node_t *thr_old_node;
 	while (thr_node != NULL) {
 		emitter_json_arr_obj_begin(&emitter);
 		emitter_json_kv(&emitter, "thr_uid", emitter_type_uint64,
 		    &thr_node->thr_uid);
+		char *thr_name = thr_node->name;
 		emitter_json_kv(&emitter, "thr_name", emitter_type_string,
-		    &thr_node->name);
+		    &thr_name);
 		emitter_json_arr_obj_end(&emitter);
+		thr_old_node = thr_node;
 		thr_node = thr_node->next;
-		idalloc(tsdn_tsd(tsdn), thr_node);
+		idalloc(tsdn_tsd(tsdn), thr_old_node);
 	}
 	emitter_json_arr_end(&emitter);
 
 	/* Emit stack traces. */
 	emitter_json_arr_begin(&emitter, "stack_traces");
 	prof_bt_node_t *bt_node = log_bt_first;
+	prof_bt_node_t *bt_old_node; 
 	/* 
 	 * Calculate how many hex digits we need: twice number of bytes, two for
 	 * "0x", and then one more for terminating '\0'.
@@ -2459,22 +2463,26 @@ void prof_log_stop(tsdn_t *tsdn) {
 	size_t buf_sz = 2 * sizeof(intptr_t) + 3;
 	char buf[buf_sz];
 	while (bt_node != NULL) {
-		emitter_json_arr_begin(&emitter, "trace");
+		emitter_json_array_begin(&emitter);
 		size_t i;
 		for (i = 0; i < bt_node->bt.len; i++) {
 			malloc_snprintf(buf, buf_sz, "%p", bt_node->bt.vec[i]);
-			emitter_json_kv(&emitter, "trace", emitter_type_string,
-			    buf);
+			char *trace_str = buf;
+			emitter_json_arr_value(&emitter, emitter_type_string,
+			    &trace_str);
 		}
-		emitter_json_arr_end(&emitter);
+		emitter_json_array_end(&emitter);
+
+		bt_old_node = bt_node;
 		bt_node = bt_node->next;
-		idalloc(tsdn_tsd(tsdn), bt_node);
+		idalloc(tsdn_tsd(tsdn), bt_old_node);
 	}
 	emitter_json_arr_end(&emitter);
 
 	/* Emit allocations. */
 	emitter_json_arr_begin(&emitter, "allocations");
 	prof_alloc_node_t *alloc_node = log_alloc_first;
+	prof_alloc_node_t *alloc_old_node;
 	while (alloc_node != NULL) {
 		emitter_json_arr_obj_begin(&emitter);
 		emitter_json_kv(&emitter, "alloc_thread", emitter_type_size,
@@ -2490,16 +2498,28 @@ void prof_log_stop(tsdn_t *tsdn) {
 		emitter_json_kv(&emitter, "free_timestamp",
 		    emitter_type_uint64, &alloc_node->free_time_ns);
 		emitter_json_arr_obj_end(&emitter);
-		idalloc(tsdn_tsd(tsdn), bt_node);
+
+		alloc_old_node = alloc_node;
+		alloc_node = alloc_node->next;
+		idalloc(tsdn_tsd(tsdn), alloc_old_node);
 	}
 		
 	emitter_json_arr_end(&emitter);
 
 	emitter_json_arr_obj_end(&emitter);
 
+	/* Reset all global state. */
 	ckh_delete(tsdn_tsd(tsdn), &log_bt_node_set);
 	ckh_delete(tsdn_tsd(tsdn), &log_thr_node_set);
 	log_tables_initialized = false;
+	log_bt_index = 0;
+	log_thr_index = 0;
+	log_bt_first = NULL;
+	log_bt_last = NULL;
+	log_thr_first = NULL;
+	log_thr_last = NULL;
+	log_alloc_first = NULL;
+	log_alloc_last = NULL;
 
 	malloc_mutex_unlock(tsdn, &log_mtx);
 }
