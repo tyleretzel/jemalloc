@@ -101,7 +101,8 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 	    extents_npages_get(&arena->extents_retained) << LG_PAGE);
 
 	atomic_store_zu(&astats->extent_avail,
-	    atomic_load_zu(&arena->extent_avail_cnt, ATOMIC_RELAXED),
+	    atomic_load_zu(&arena->extent_avail_cnt[extent_class_small],
+	        ATOMIC_RELAXED),
 	    ATOMIC_RELAXED);
 
 	arena_stats_accum_u64(&astats->decay_dirty.npurge,
@@ -1931,7 +1932,10 @@ arena_new(tsdn_t *tsdn, unsigned ind, extent_hooks_t *extent_hooks) {
 		goto label_error;
 	}
 
-	extent_avail_new(&arena->extent_avail);
+	for (i = 0; i < EXTENT_NCLASSES; i++) {
+		extent_avail_new(&arena->extent_avail[i]);
+	}
+
 	if (malloc_mutex_init(&arena->extent_avail_mtx, "extent_avail",
 	    WITNESS_RANK_EXTENT_AVAIL, malloc_mutex_rank_exclusive)) {
 		goto label_error;

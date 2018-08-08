@@ -16,6 +16,13 @@ typedef enum {
 	extent_state_retained = 3
 } extent_state_t;
 
+#define EXTENT_NCLASSES 3
+typedef enum {
+	extent_class_small = 0,
+	extent_class_large = 1,
+	extent_class_nonactive = 2
+} extent_class_t;
+
 /* Extent (span of pages).  Use accessor functions for e_* fields. */
 struct extent_s {
 	/*
@@ -31,7 +38,7 @@ struct extent_s {
 	 * f: nfree
 	 * n: sn
 	 *
-	 * nnnnnnnn ... nnnnffff ffffffii iiiiiitt zdcbaaaa aaaaaaaa
+	 * nnnnnnnn ... nnnfffff ffffffii iiiiiitt zdcbaaaa aaaaaaaa
 	 *
 	 * arena_ind: Arena from which this extent came, or all 1 bits if
 	 *            unassociated.
@@ -117,7 +124,7 @@ struct extent_s {
 #define EXTENT_BITS_SZIND_SHIFT  (EXTENT_BITS_STATE_WIDTH + EXTENT_BITS_STATE_SHIFT)
 #define EXTENT_BITS_SZIND_MASK  MASK(EXTENT_BITS_SZIND_WIDTH, EXTENT_BITS_SZIND_SHIFT)
 
-#define EXTENT_BITS_NFREE_WIDTH  (LG_SLAB_MAXREGS + 1)
+#define EXTENT_BITS_NFREE_WIDTH  (LG_SLAB_LARGE_REGS + 1)
 #define EXTENT_BITS_NFREE_SHIFT  (EXTENT_BITS_SZIND_WIDTH + EXTENT_BITS_SZIND_SHIFT)
 #define EXTENT_BITS_NFREE_MASK  MASK(EXTENT_BITS_NFREE_WIDTH, EXTENT_BITS_NFREE_SHIFT)
 

@@ -8,6 +8,15 @@
 
 bin_info_t bin_infos[SC_NBINS];
 
+static
+void bin_dump_info(bin_info_t *bin_info) {
+	malloc_printf("reg_size: %zu\n", bin_info->reg_size);
+	malloc_printf("slab_size: %zu\n", bin_info->slab_size);
+	malloc_printf("nregs: %d\n", bin_info->nregs);
+	malloc_printf("extent_class: %u\n", bin_info->extent_class);
+	malloc_printf("\n");
+}
+
 void
 bin_infos_init(sc_data_t *sc_data, bin_info_t bin_infos[SC_NBINS]) {
 	for (unsigned i = 0; i < SC_NBINS; i++) {
@@ -21,6 +30,13 @@ bin_infos_init(sc_data_t *sc_data, bin_info_t bin_infos[SC_NBINS]) {
 		bitmap_info_t bitmap_info = BITMAP_INFO_INITIALIZER(
 		    bin_info->nregs);
 		bin_info->bitmap_info = bitmap_info;
+
+		if (bin_info->nregs > SLAB_SMALL_REGS) {
+			bin_info->extent_class = extent_class_large;
+		} else {
+			bin_info->extent_class = extent_class_small;
+		}
+		bin_dump_info(bin_info);
 	}
 }
 

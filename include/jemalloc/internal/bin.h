@@ -47,6 +47,8 @@ struct bin_info_s {
 	 * bin.
 	 */
 	bitmap_info_t		bitmap_info;
+
+	extent_class_t		extent_class;
 };
 
 extern bin_info_t bin_infos[SC_NBINS];

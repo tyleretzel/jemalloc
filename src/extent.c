@@ -178,24 +178,25 @@ extent_lock_from_addr(tsdn_t *tsdn, rtree_ctx_t *rtree_ctx, void *addr) {
 }
 
 extent_t *
-extent_alloc(tsdn_t *tsdn, arena_t *arena) {
+extent_alloc(tsdn_t *tsdn, arena_t *arena, extent_class_t class) {
 	malloc_mutex_lock(tsdn, &arena->extent_avail_mtx);
-	extent_t *extent = extent_avail_first(&arena->extent_avail);
+	extent_t *extent = extent_avail_first(&arena->extent_avail[class]);
 	if (extent == NULL) {
 		malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
 		return base_alloc_extent(tsdn, arena->base);
 	}
-	extent_avail_remove(&arena->extent_avail, extent);
-	atomic_fetch_sub_zu(&arena->extent_avail_cnt, 1, ATOMIC_RELAXED);
+	extent_avail_remove(&arena->extent_avail[class], extent);
+	atomic_fetch_sub_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
 	malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
 	return extent;
 }
 
 void
-extent_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *extent) {
+extent_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *extent,
+    extent_class_t class) {
 	malloc_mutex_lock(tsdn, &arena->extent_avail_mtx);
-	extent_avail_insert(&arena->extent_avail, extent);
-	atomic_fetch_add_zu(&arena->extent_avail_cnt, 1, ATOMIC_RELAXED);
+	extent_avail_insert(&arena->extent_avail[class], extent);
+	atomic_fetch_add_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
 	malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
 }
 
@@ -650,7 +651,7 @@ extents_leak(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
 			    growing_retained);
 		}
 	}
-	extent_dalloc(tsdn, arena, extent);
+	extent_dalloc(tsdn, arena, extent, extent_class_small);
 }
 
 void
@@ -1295,7 +1296,7 @@ extent_grow_retained(tsdn_t *tsdn, arena_t *arena,
 		alloc_size = sz_pind2sz(arena->extent_grow_next + egn_skip);
 	}
 
-	extent_t *extent = extent_alloc(tsdn, arena);
+	extent_t *extent = extent_alloc(tsdn, arena, extent_class_small);
 	if (extent == NULL) {
 		goto label_err;
 	}
@@ -1318,7 +1319,7 @@ extent_grow_retained(tsdn_t *tsdn, arena_t *arena,
 	    arena_extent_sn_next(arena), extent_state_active, zeroed,
 	    committed, true);
 	if (ptr == NULL) {
-		extent_dalloc(tsdn, arena, extent);
+		extent_dalloc(tsdn, arena, extent, extent_class_small);
 		goto label_err;
 	}
 
@@ -1463,7 +1464,7 @@ extent_alloc_wrapper_hard(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, void *new_addr, size_t size, size_t pad,
     size_t alignment, bool slab, szind_t szind, bool *zero, bool *commit) {
 	size_t esize = size + pad;
-	extent_t *extent = extent_alloc(tsdn, arena);
+	extent_t *extent = extent_alloc(tsdn, arena, extent_class_small);
 	if (extent == NULL) {
 		return NULL;
 	}
@@ -1479,7 +1480,7 @@ extent_alloc_wrapper_hard(tsdn_t *tsdn, arena_t *arena,
 		extent_hook_post_reentrancy(tsdn);
 	}
 	if (addr == NULL) {
-		extent_dalloc(tsdn, arena, extent);
+		extent_dalloc(tsdn, arena, extent, extent_class_small);
 		return NULL;
 	}
 	extent_init(extent, arena, addr, esize, slab, szind,
@@ -1737,7 +1738,7 @@ extent_dalloc_wrapper_try(tsdn_t *tsdn, arena_t *arena,
 	}
 
 	if (!err) {
-		extent_dalloc(tsdn, arena, extent);
+		extent_dalloc(tsdn, arena, extent, extent_class_small);
 	}
 
 	return err;
@@ -1837,7 +1838,7 @@ extent_destroy_wrapper(tsdn_t *tsdn, arena_t *arena,
 		extent_hook_post_reentrancy(tsdn);
 	}
 
-	extent_dalloc(tsdn, arena, extent);
+	extent_dalloc(tsdn, arena, extent, extent_class_small);
 }
 
 static bool
@@ -2029,7 +2030,7 @@ extent_split_impl(tsdn_t *tsdn, arena_t *arena,
 		return NULL;
 	}
 
-	extent_t *trail = extent_alloc(tsdn, arena);
+	extent_t *trail = extent_alloc(tsdn, arena, extent_class_small);
 	if (trail == NULL) {
 		goto label_error_a;
 	}
@@ -2091,7 +2092,7 @@ extent_split_impl(tsdn_t *tsdn, arena_t *arena,
 label_error_c:
 	extent_unlock2(tsdn, extent, trail);
 label_error_b:
-	extent_dalloc(tsdn, arena, trail);
+	extent_dalloc(tsdn, arena, trail, extent_class_small);
 label_error_a:
 	return NULL;
 }
@@ -2192,7 +2193,7 @@ extent_merge_impl(tsdn_t *tsdn, arena_t *arena,
 
 	extent_unlock2(tsdn, a, b);
 
-	extent_dalloc(tsdn, extent_arena_get(b), b);
+	extent_dalloc(tsdn, extent_arena_get(b), b, extent_class_small);
 
 	return false;
 }
