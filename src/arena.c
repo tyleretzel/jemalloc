@@ -240,9 +240,12 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 
 void
 arena_extents_dirty_dalloc(tsdn_t *tsdn, arena_t *arena,
-    extent_hooks_t **r_extent_hooks, extent_t *extent) {
+    extent_hooks_t **r_extent_hooks, extent_t *extent, extent_class_t class) {
 	witness_assert_depth_to_rank(tsdn_witness_tsdp_get(tsdn),
 	    WITNESS_RANK_CORE, 0);
+
+	/* Swap out for an extent with no bitmap or profiling data. */
+	extent = extent_swap(tsdn, arena, extent, extent_class_nonactive);
 
 	extents_dalloc(tsdn, arena, r_extent_hooks, &arena->extents_dirty,
 	    extent);
@@ -939,56 +942,14 @@ arena_decay(tsdn_t *tsdn, arena_t *arena, bool is_background_thread, bool all) {
 	arena_decay_muzzy(tsdn, arena, is_background_thread, all);
 }
 
-/*
- * Consumes ownership of cur_extent (which has extent class cur_class) and
- * returns an extent with class req_class.
- */
-static extent_t *
-arena_slab_swap_extents(tsdn_t *tsdn, arena_t *arena,
-    extent_t *cur_extent, extent_class_t cur_class, extent_class_t req_class) {
-	/* Do nothing if the extent class is already the requested one. */
-	if (cur_class == req_class) {
-		return cur_extent;
-	}
-
-	assert(extent_state_get(cur_extent) == extent_state_active);
-
-	// TODO handle NULL case
-	extent_t *req_extent = extent_alloc(tsdn, arena, req_class);
-	/* Copy metadata. */
-
-	extent_init(req_extent, arena, extent_addr_get(cur_extent),
-	    extent_size_get(cur_extent), extent_slab_get(cur_extent),
-	    extent_szind_get(cur_extent), arena_extent_sn_next(arena),
-	    extent_state_active, extent_zeroed_get(cur_extent),
-	    extent_committed_get(cur_extent), extent_dumpable_get(cur_extent));
-
-	/* Remove cur_extent from the rtree and replace it with req_extent. */
-
-	// TODO: can optimize to avoid slab registering/deregistering in some
-	// cases.
-	extent_deregister_no_gdump_sub(tsdn, cur_extent);
-	bool ret = extent_register_no_gdump_add(tsdn, req_extent);
-	// TODO: Handle this better.
-	assert(!ret);
-
-	extent_dalloc(tsdn, arena, cur_extent, cur_class);
-
-	assert(extent_state_get(req_extent) == extent_state_active);
-
-	return req_extent;
-}
-
 static void
 arena_slab_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *slab, 
     const bin_info_t *bin_info) {
 	arena_nactive_sub(arena, extent_size_get(slab) >> LG_PAGE);
 
-	slab = arena_slab_swap_extents(tsdn, arena, slab,
-	    bin_info->extent_class, extent_class_small);
-
 	extent_hooks_t *extent_hooks = EXTENT_HOOKS_INITIALIZER;
-	arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, slab);
+	arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, slab,
+	    bin_info->extent_class);
 }
 
 static void
@@ -1222,8 +1183,7 @@ arena_slab_alloc(tsdn_t *tsdn, arena_t *arena, szind_t binind,
 	assert(extent_slab_get(slab));
 
 	/* Swap out the extent_t for one with the appropriately sized bitmap. */
-	slab = arena_slab_swap_extents(tsdn, arena, slab, extent_class_small,
-	           bin_info->extent_class);
+	slab = extent_swap(tsdn, arena, slab, bin_info->extent_class);
 
 	/* Initialize slab internals. */
 	bitmap_t *bitmap = extent_slab_data_get(slab);

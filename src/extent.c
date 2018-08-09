@@ -345,6 +345,7 @@ static void
 extents_insert_locked(tsdn_t *tsdn, extents_t *extents, extent_t *extent) {
 	malloc_mutex_assert_owner(tsdn, &extents->mtx);
 	assert(extent_state_get(extent) == extents->state);
+	assert(extent_class_get(extent) == extent_class_nonactive); 
 
 	size_t size = extent_size_get(extent);
 	size_t psz = extent_size_quantize_floor(size);
@@ -377,6 +378,7 @@ static void
 extents_remove_locked(tsdn_t *tsdn, extents_t *extents, extent_t *extent) {
 	malloc_mutex_assert_owner(tsdn, &extents->mtx);
 	assert(extent_state_get(extent) == extents->state);
+	assert(extent_class_get(extent) == extent_class_nonactive); 
 
 	size_t size = extent_size_get(extent);
 	size_t psz = extent_size_quantize_floor(size);
@@ -564,6 +566,7 @@ extents_alloc(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
 void
 extents_dalloc(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
     extents_t *extents, extent_t *extent) {
+	assert(extent_class_get(extent) == extent_class_nonactive);
 	assert(extent_base_get(extent) != NULL);
 	assert(extent_size_get(extent) != 0);
 	assert(extent_dumpable_get(extent));
@@ -595,6 +598,7 @@ extents_evict(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
 		if (extent == NULL) {
 			goto label_return;
 		}
+		assert(extent_class_get(extent) == extent_class_nonactive);
 		/* Check the eviction limit. */
 		size_t extents_npages = atomic_load_zu(&extents->npages,
 		    ATOMIC_RELAXED);
@@ -655,7 +659,7 @@ extents_leak(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
 			    growing_retained);
 		}
 	}
-	extent_dalloc(tsdn, arena, extent, extent_class_small);
+	extent_dalloc(tsdn, arena, extent, extent_class_nonactive);
 }
 
 void
@@ -1300,7 +1304,7 @@ extent_grow_retained(tsdn_t *tsdn, arena_t *arena,
 		alloc_size = sz_pind2sz(arena->extent_grow_next + egn_skip);
 	}
 
-	extent_t *extent = extent_alloc(tsdn, arena, extent_class_small);
+	extent_t *extent = extent_alloc(tsdn, arena, extent_class_nonactive);
 	if (extent == NULL) {
 		goto label_err;
 	}
@@ -1323,7 +1327,7 @@ extent_grow_retained(tsdn_t *tsdn, arena_t *arena,
 	    arena_extent_sn_next(arena), extent_state_active, zeroed,
 	    committed, true);
 	if (ptr == NULL) {
-		extent_dalloc(tsdn, arena, extent, extent_class_small);
+		extent_dalloc(tsdn, arena, extent, extent_class_nonactive);
 		goto label_err;
 	}
 
@@ -1468,7 +1472,7 @@ extent_alloc_wrapper_hard(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, void *new_addr, size_t size, size_t pad,
     size_t alignment, bool slab, szind_t szind, bool *zero, bool *commit) {
 	size_t esize = size + pad;
-	extent_t *extent = extent_alloc(tsdn, arena, extent_class_small);
+	extent_t *extent = extent_alloc(tsdn, arena, extent_class_nonactive);
 	if (extent == NULL) {
 		return NULL;
 	}
@@ -1484,7 +1488,7 @@ extent_alloc_wrapper_hard(tsdn_t *tsdn, arena_t *arena,
 		extent_hook_post_reentrancy(tsdn);
 	}
 	if (addr == NULL) {
-		extent_dalloc(tsdn, arena, extent, extent_class_small);
+		extent_dalloc(tsdn, arena, extent, extent_class_nonactive);
 		return NULL;
 	}
 	extent_init(extent, arena, addr, esize, slab, szind,
@@ -1644,9 +1648,11 @@ extent_try_coalesce(tsdn_t *tsdn, arena_t *arena,
 static void
 extent_record(tsdn_t *tsdn, arena_t *arena, extent_hooks_t **r_extent_hooks,
     extents_t *extents, extent_t *extent, bool growing_retained) {
+
 	rtree_ctx_t rtree_ctx_fallback;
 	rtree_ctx_t *rtree_ctx = tsdn_rtree_ctx(tsdn, &rtree_ctx_fallback);
 
+	assert(extent_class_get(extent) == extent_class_nonactive);
 	assert((extents_state_get(extents) != extent_state_dirty &&
 	    extents_state_get(extents) != extent_state_muzzy) ||
 	    !extent_zeroed_get(extent));
@@ -1742,7 +1748,7 @@ extent_dalloc_wrapper_try(tsdn_t *tsdn, arena_t *arena,
 	}
 
 	if (!err) {
-		extent_dalloc(tsdn, arena, extent, extent_class_small);
+		extent_dalloc(tsdn, arena, extent, extent_class_nonactive);
 	}
 
 	return err;
@@ -1842,7 +1848,7 @@ extent_destroy_wrapper(tsdn_t *tsdn, arena_t *arena,
 		extent_hook_post_reentrancy(tsdn);
 	}
 
-	extent_dalloc(tsdn, arena, extent, extent_class_small);
+	extent_dalloc(tsdn, arena, extent, extent_class_nonactive);
 }
 
 static bool
@@ -2034,7 +2040,7 @@ extent_split_impl(tsdn_t *tsdn, arena_t *arena,
 		return NULL;
 	}
 
-	extent_t *trail = extent_alloc(tsdn, arena, extent_class_small);
+	extent_t *trail = extent_alloc(tsdn, arena, extent_class_nonactive);
 	if (trail == NULL) {
 		goto label_error_a;
 	}
@@ -2096,7 +2102,7 @@ extent_split_impl(tsdn_t *tsdn, arena_t *arena,
 label_error_c:
 	extent_unlock2(tsdn, extent, trail);
 label_error_b:
-	extent_dalloc(tsdn, arena, trail, extent_class_small);
+	extent_dalloc(tsdn, arena, trail, extent_class_nonactive);
 label_error_a:
 	return NULL;
 }
@@ -2197,7 +2203,7 @@ extent_merge_impl(tsdn_t *tsdn, arena_t *arena,
 
 	extent_unlock2(tsdn, a, b);
 
-	extent_dalloc(tsdn, extent_arena_get(b), b, extent_class_small);
+	extent_dalloc(tsdn, extent_arena_get(b), b, extent_class_nonactive);
 
 	return false;
 }
@@ -2222,6 +2228,51 @@ extent_dump(extent_t *extent) {
 	malloc_printf("committed: %d\n", extent_committed_get(extent));
 	malloc_printf("dumpable: %d\n", extent_dumpable_get(extent));
 }
+
+/*
+ * Consumes ownership of cur_extent (which has extent class cur_class) and
+ * returns an extent with class req_class.
+ */
+extent_t *
+extent_swap(tsdn_t *tsdn, arena_t *arena, extent_t *cur_extent,
+    extent_class_t req_class) {
+	extent_class_t cur_class = extent_class_get(cur_extent);
+	/* Do nothing if the extent class is already the requested one. */
+	if (cur_class == req_class) {
+		return cur_extent;
+	}
+
+	assert(extent_state_get(cur_extent) == extent_state_active);
+
+	// TODO handle NULL case
+	extent_t *req_extent = extent_alloc(tsdn, arena, req_class);
+
+	/* Copy metadata. */
+	extent_init(req_extent, arena, extent_addr_get(cur_extent),
+	    extent_size_get(cur_extent), extent_slab_get(cur_extent),
+	    extent_szind_get(cur_extent), arena_extent_sn_next(arena),
+	    extent_state_active, extent_zeroed_get(cur_extent),
+	    extent_committed_get(cur_extent), extent_dumpable_get(cur_extent));
+
+	/* Remove cur_extent from the rtree and replace it with req_extent. */
+
+	// TODO: can optimize to avoid slab registering/deregistering in some
+	// cases.
+	extent_deregister_no_gdump_sub(tsdn, cur_extent);
+	if (req_class == extent_class_nonactive) {
+		extent_slab_set(req_extent, 0);
+	}
+	bool ret = extent_register_no_gdump_add(tsdn, req_extent);
+	// TODO: Handle this better.
+	assert(!ret);
+
+	extent_dalloc(tsdn, arena, cur_extent, cur_class);
+
+	assert(extent_state_get(req_extent) == extent_state_active);
+
+	return req_extent;
+}
+
 
 bool
 extent_boot(void) {

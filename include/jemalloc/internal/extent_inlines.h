@@ -168,6 +168,7 @@ extent_past_get(const extent_t *extent) {
 static inline bitmap_t *
 extent_slab_data_get(extent_t *extent) {
 	assert(extent_slab_get(extent));
+	assert(extent_class_get(extent) != extent_class_nonactive);
 	char *end_of_extent = ((char *)extent) + sizeof(extent_t);
 	return (bitmap_t *)end_of_extent;
 }
@@ -175,6 +176,7 @@ extent_slab_data_get(extent_t *extent) {
 static inline const bitmap_t *
 extent_slab_data_get_const(const extent_t *extent) {
 	assert(extent_slab_get(extent));
+	assert(extent_class_get(extent) != extent_class_nonactive);
 	char *end_of_extent = ((char *)extent) + sizeof(extent_t);
 	return (bitmap_t *)end_of_extent;
 }
@@ -182,6 +184,7 @@ extent_slab_data_get_const(const extent_t *extent) {
 static inline extent_prof_data_t *
 extent_prof_data_get(const extent_t *extent) {
 	assert(!extent_slab_get(extent));
+	assert(extent_class_get(extent) != extent_class_nonactive);
 	char *end_of_extent = ((char *)extent) + sizeof(extent_t);
 	return (extent_prof_data_t *)end_of_extent;
 }

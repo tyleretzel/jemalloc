@@ -119,7 +119,8 @@ large_ralloc_no_move_shrink(tsdn_t *tsdn, extent_t *extent, size_t usize) {
 			    extent_size_get(trail));
 		}
 
-		arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, trail);
+		arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, trail,
+		    extent_class_small);
 	}
 
 	arena_extent_ralloc_large_shrink(tsdn, arena, extent, oldusize);
@@ -343,7 +344,8 @@ large_dalloc_prep_impl(tsdn_t *tsdn, arena_t *arena, extent_t *extent,
 static void
 large_dalloc_finish_impl(tsdn_t *tsdn, arena_t *arena, extent_t *extent) {
 	extent_hooks_t *extent_hooks = EXTENT_HOOKS_INITIALIZER;
-	arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, extent);
+	arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, extent,
+	    extent_class_small);
 }
 
 void

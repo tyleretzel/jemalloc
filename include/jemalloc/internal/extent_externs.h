@@ -74,6 +74,8 @@ bool extent_merge_wrapper(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, extent_t *a, extent_t *b);
 bool extent_register_no_gdump_add(tsdn_t *tsdn, extent_t *extent);
 void extent_deregister_no_gdump_sub(tsdn_t *tsdn, extent_t *extent);
+extent_t *extent_swap(tsdn_t *tsdn, arena_t *arena, extent_t *cur_extent,
+    extent_class_t req_class);
 
 bool extent_boot(void);
 

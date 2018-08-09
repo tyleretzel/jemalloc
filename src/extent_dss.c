@@ -123,7 +123,7 @@ extent_alloc_dss(tsdn_t *tsdn, arena_t *arena, void *new_addr, size_t size,
 		return NULL;
 	}
 
-	gap = extent_alloc(tsdn, arena, extent_class_small);
+	gap = extent_alloc(tsdn, arena, extent_class_nonactive);
 	if (gap == NULL) {
 		return NULL;
 	}

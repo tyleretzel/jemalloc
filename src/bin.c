@@ -36,7 +36,6 @@ bin_infos_init(sc_data_t *sc_data, bin_info_t bin_infos[SC_NBINS]) {
 		} else {
 			bin_info->extent_class = extent_class_small;
 		}
-		bin_dump_info(bin_info);
 	}
 }
 
