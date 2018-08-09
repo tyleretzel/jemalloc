@@ -183,7 +183,7 @@ extent_alloc(tsdn_t *tsdn, arena_t *arena, extent_class_t class) {
 	extent_t *extent = extent_avail_first(&arena->extent_avail[class]);
 	if (extent == NULL) {
 		malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
-		return base_alloc_extent(tsdn, arena->base);
+		return base_alloc_extent(tsdn, arena->base, extent_class_small);
 	}
 	extent_avail_remove(&arena->extent_avail[class], extent);
 	atomic_fetch_sub_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
@@ -2206,6 +2206,13 @@ extent_merge_wrapper(tsdn_t *tsdn, arena_t *arena,
 
 bool
 extent_boot(void) {
+
+	/* 
+	 * This is something that we can't check in the preprocessor, but should
+	 * hold true, since we want extent_prof_data_t to fit in a small extent. 
+	 */
+	assert(SLAB_SMALL_BYTES >= sizeof(extent_prof_data_t));
+
 	if (rtree_new(&extents_rtree, true)) {
 		return true;
 	}

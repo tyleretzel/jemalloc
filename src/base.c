@@ -466,10 +466,19 @@ base_alloc(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment) {
 }
 
 extent_t *
-base_alloc_extent(tsdn_t *tsdn, base_t *base) {
+base_alloc_extent(tsdn_t *tsdn, base_t *base, extent_class_t class) {
 	size_t esn;
-	extent_t *extent = base_alloc_impl(tsdn, base, sizeof(extent_t),
-	    CACHELINE, &esn);
+
+	size_t sz = sizeof(extent_t);
+	/* If this extent_t needs a bitmap, we add space for it. */
+	if (class == extent_class_small) {
+		sz += SLAB_SMALL_BYTES;
+	} else if (class == extent_class_large) {
+		sz += SLAB_LARGE_BYTES;
+	}
+
+	extent_t *extent = base_alloc_impl(tsdn, base, sz, CACHELINE, &esn);
+	
 	if (extent == NULL) {
 		return NULL;
 	}

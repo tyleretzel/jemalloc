@@ -23,6 +23,13 @@ typedef enum {
 	extent_class_nonactive = 2
 } extent_class_t;
 
+typedef struct {
+	/* Time when this was allocated. */
+	nstime_t		e_alloc_time;
+	/* Points to a prof_tctx_t. */
+	atomic_p_t		e_prof_tctx;
+} extent_prof_data_t;
+
 /* Extent (span of pages).  Use accessor functions for e_* fields. */
 struct extent_s {
 	/*
@@ -150,11 +157,7 @@ struct extent_s {
 	};
 
 	/*
-	 * List linkage, used by a variety of lists:
-	 * - bin_t's slabs_full
-	 * - extents_t's LRU
-	 * - stashed dirty extents
-	 * - arena's large allocations
+	 * List linkage, used by a variety of lists: * - bin_t's slabs_full * - extents_t's LRU * - stashed dirty extents * - arena's large allocations
 	 */
 	ql_elm(extent_t)	ql_link;
 
@@ -163,20 +166,8 @@ struct extent_s {
 	 * for extent_avail
 	 */
 	phn(extent_t)		ph_link;
-
-	union {
-		/* Small region slab metadata. */
-		arena_slab_data_t	e_slab_data;
-
-		/* Profiling data, used for large objects. */
-		struct {
-			/* Time when this was allocated. */
-			nstime_t		e_alloc_time;
-			/* Points to a prof_tctx_t. */
-			atomic_p_t		e_prof_tctx;
-		};
-	};
 };
+
 typedef ql_head(extent_t) extent_list_t;
 typedef ph(extent_t) extent_tree_t;
 typedef ph(extent_t) extent_heap_t;

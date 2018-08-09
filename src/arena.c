@@ -256,13 +256,13 @@ arena_extents_dirty_dalloc(tsdn_t *tsdn, arena_t *arena,
 static void *
 arena_slab_reg_alloc(extent_t *slab, const bin_info_t *bin_info) {
 	void *ret;
-	arena_slab_data_t *slab_data = extent_slab_data_get(slab);
+	bitmap_t *bitmap = extent_slab_data_get(slab);
 	size_t regind;
 
 	assert(extent_nfree_get(slab) > 0);
-	assert(!bitmap_full(slab_data->bitmap, &bin_info->bitmap_info));
+	assert(!bitmap_full(bitmap, &bin_info->bitmap_info));
 
-	regind = bitmap_sfu(slab_data->bitmap, &bin_info->bitmap_info);
+	regind = bitmap_sfu(bitmap, &bin_info->bitmap_info);
 	ret = (void *)((uintptr_t)extent_addr_get(slab) +
 	    (uintptr_t)(bin_info->reg_size * regind));
 	extent_nfree_dec(slab);
@@ -294,16 +294,16 @@ arena_slab_regind(extent_t *slab, szind_t binind, const void *ptr) {
 }
 
 static void
-arena_slab_reg_dalloc(extent_t *slab, arena_slab_data_t *slab_data, void *ptr) {
+arena_slab_reg_dalloc(extent_t *slab, bitmap_t *bitmap, void *ptr) {
 	szind_t binind = extent_szind_get(slab);
 	const bin_info_t *bin_info = &bin_infos[binind];
 	size_t regind = arena_slab_regind(slab, binind, ptr);
 
 	assert(extent_nfree_get(slab) < bin_info->nregs);
 	/* Freeing an unallocated pointer can cause assertion failure. */
-	assert(bitmap_get(slab_data->bitmap, &bin_info->bitmap_info, regind));
+	assert(bitmap_get(bitmap, &bin_info->bitmap_info, regind));
 
-	bitmap_unset(slab_data->bitmap, &bin_info->bitmap_info, regind);
+	bitmap_unset(bitmap, &bin_info->bitmap_info, regind);
 	extent_nfree_inc(slab);
 }
 
@@ -1177,9 +1177,9 @@ arena_slab_alloc(tsdn_t *tsdn, arena_t *arena, szind_t binind,
 	assert(extent_slab_get(slab));
 
 	/* Initialize slab internals. */
-	arena_slab_data_t *slab_data = extent_slab_data_get(slab);
+	bitmap_t *bitmap = extent_slab_data_get(slab);
 	extent_nfree_set(slab, bin_info->nregs);
-	bitmap_init(slab_data->bitmap, &bin_info->bitmap_info, false);
+	bitmap_init(bitmap, &bin_info->bitmap_info, false);
 
 	arena_nactive_add(arena, extent_size_get(slab) >> LG_PAGE);
 
@@ -1567,7 +1567,7 @@ arena_bin_lower_slab(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
 static void
 arena_dalloc_bin_locked_impl(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
     void *ptr, bool junked) {
-	arena_slab_data_t *slab_data = extent_slab_data_get(slab);
+	bitmap_t *bitmap = extent_slab_data_get(slab);
 	szind_t binind = extent_szind_get(slab);
 	bin_t *bin = &arena->bins[binind];
 	const bin_info_t *bin_info = &bin_infos[binind];
@@ -1576,7 +1576,7 @@ arena_dalloc_bin_locked_impl(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
 		arena_dalloc_junk_small(ptr, bin_info);
 	}
 
-	arena_slab_reg_dalloc(slab, slab_data, ptr);
+	arena_slab_reg_dalloc(slab, bitmap, ptr);
 	unsigned nfree = extent_nfree_get(slab);
 	if (nfree == bin_info->nregs) {
 		arena_dissociate_bin_slab(arena, slab, bin);

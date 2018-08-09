@@ -3,11 +3,16 @@
 
 #include "jemalloc/internal/sc.h"
 
-#define LG_SLAB_SMALL_REGS  (3 + LG_CACHELINE)
-#define LG_SLAB_LARGE_REGS  (3 + LG_CACHELINE + 1)
+#define LG_SLAB_SMALL_BYTES (LG_CACHELINE)
+#define LG_SLAB_LARGE_BYTES (LG_CACHELINE + 1)
+
+#define LG_SLAB_SMALL_REGS  (3 + LG_SLAB_SMALL_BYTES)
+#define LG_SLAB_LARGE_REGS  (3 + LG_SLAB_LARGE_BYTES)
 
 #define SLAB_SMALL_REGS (1 << LG_SLAB_SMALL_REGS)
 #define SLAB_LARGE_REGS (1 << LG_SLAB_LARGE_REGS)
+#define SLAB_SMALL_BYTES (1 << LG_SLAB_SMALL_BYTES)
+#define SLAB_LARGE_BYTES (1 << LG_SLAB_LARGE_BYTES)
 
 /* Default decay times in milliseconds. */
 #define DIRTY_DECAY_MS_DEFAULT	ZD(10 * 1000)
