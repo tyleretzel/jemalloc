@@ -157,7 +157,11 @@ struct extent_s {
 	};
 
 	/*
-	 * List linkage, used by a variety of lists: * - bin_t's slabs_full * - extents_t's LRU * - stashed dirty extents * - arena's large allocations
+	 * List linkage, used by a variety of lists:
+	 * - bin_t's slabs_full
+	 * - extents_t's LRU
+	 * - stashed dirty extents
+	 * - arena's large allocations
 	 */
 	ql_elm(extent_t)	ql_link;
 

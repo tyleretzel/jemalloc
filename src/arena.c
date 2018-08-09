@@ -951,6 +951,8 @@ arena_slab_swap_extents(tsdn_t *tsdn, arena_t *arena,
 		return cur_extent;
 	}
 
+	assert(extent_state_get(cur_extent) == extent_state_active);
+
 	// TODO handle NULL case
 	extent_t *req_extent = extent_alloc(tsdn, arena, req_class);
 	/* Copy metadata. */
@@ -966,6 +968,8 @@ arena_slab_swap_extents(tsdn_t *tsdn, arena_t *arena,
 	assert(!ret);
 
 	extent_dalloc(tsdn, arena, cur_extent, cur_class);
+
+	assert(extent_state_get(req_extent) == extent_state_active);
 
 	return req_extent;
 }

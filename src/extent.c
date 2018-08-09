@@ -350,6 +350,7 @@ extents_insert_locked(tsdn_t *tsdn, extents_t *extents, extent_t *extent) {
 		bitmap_unset(extents->bitmap, &extents_bitmap_info,
 		    (size_t)pind);
 	}
+
 	extent_heap_insert(&extents->heaps[pind], extent);
 
 	if (config_stats) {
@@ -2202,6 +2203,21 @@ bool
 extent_merge_wrapper(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, extent_t *a, extent_t *b) {
 	return extent_merge_impl(tsdn, arena, r_extent_hooks, a, b, false);
+}
+
+void
+extent_dump(extent_t *extent) {
+	malloc_printf("arena: %p\n", extent_arena_get(extent));
+	malloc_printf("addr: %p\n", extent_addr_get(extent));
+	malloc_printf("size: %zu\n", extent_size_get(extent));
+	malloc_printf("slab: %d\n", extent_slab_get(extent));
+	malloc_printf("szind: %d\n", extent_szind_get(extent));
+	malloc_printf("nfree: %u\n", extent_nfree_get(extent));
+	malloc_printf("sn: %zu\n", extent_sn_get(extent));
+	malloc_printf("state: %u\n", extent_state_get(extent));
+	malloc_printf("zeroed: %d\n", extent_zeroed_get(extent));
+	malloc_printf("committed: %d\n", extent_committed_get(extent));
+	malloc_printf("dumpable: %d\n", extent_dumpable_get(extent));
 }
 
 bool
