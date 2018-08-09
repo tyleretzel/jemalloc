@@ -59,7 +59,7 @@ static void arena_decay_to_limit(tsdn_t *tsdn, arena_t *arena,
 static bool arena_decay_dirty(tsdn_t *tsdn, arena_t *arena,
     bool is_background_thread, bool all);
 static void arena_dalloc_bin_slab(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
-    bin_t *bin);
+    bin_t *bin, const bin_info_t *bin_info);
 static void arena_bin_lower_slab(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
     bin_t *bin);
 
@@ -939,9 +939,44 @@ arena_decay(tsdn_t *tsdn, arena_t *arena, bool is_background_thread, bool all) {
 	arena_decay_muzzy(tsdn, arena, is_background_thread, all);
 }
 
+/*
+ * Consumes ownership of cur_extent (which has extent class cur_class) and
+ * returns an extent with class req_class.
+ */
+static extent_t *
+arena_slab_swap_extents(tsdn_t *tsdn, arena_t *arena,
+    extent_t *cur_extent, extent_class_t cur_class, extent_class_t req_class) {
+	/* Do nothing if the extent class is already the requested one. */
+	if (cur_class == req_class) {
+		return cur_extent;
+	}
+
+	// TODO handle NULL case
+	extent_t *req_extent = extent_alloc(tsdn, arena, req_class);
+	/* Copy metadata. */
+	memcpy(req_extent, cur_extent, sizeof(extent_t));
+
+	/* Remove cur_extent from the rtree and replace it with req_extent. */
+
+	// TODO: can optimize to avoid slab registering/deregistering in some
+	// cases.
+	extent_deregister_no_gdump_sub(tsdn, cur_extent);
+	bool ret = extent_register_no_gdump_add(tsdn, req_extent);
+	// TODO: Handle this better.
+	assert(!ret);
+
+	extent_dalloc(tsdn, arena, cur_extent, cur_class);
+
+	return req_extent;
+}
+
 static void
-arena_slab_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *slab) {
+arena_slab_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *slab, 
+    const bin_info_t *bin_info) {
 	arena_nactive_sub(arena, extent_size_get(slab) >> LG_PAGE);
+
+	slab = arena_slab_swap_extents(tsdn, arena, slab,
+	    bin_info->extent_class, extent_class_small);
 
 	extent_hooks_t *extent_hooks = EXTENT_HOOKS_INITIALIZER;
 	arena_extents_dirty_dalloc(tsdn, arena, &extent_hooks, slab);
@@ -1040,25 +1075,26 @@ arena_reset(tsd_t *tsd, arena_t *arena) {
 	for (unsigned i = 0; i < SC_NBINS; i++) {
 		extent_t *slab;
 		bin_t *bin = &arena->bins[i];
+		const bin_info_t *bin_info = &bin_infos[i];
 		malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);
 		if (bin->slabcur != NULL) {
 			slab = bin->slabcur;
 			bin->slabcur = NULL;
 			malloc_mutex_unlock(tsd_tsdn(tsd), &bin->lock);
-			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab);
+			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab, bin_info);
 			malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);
 		}
 		while ((slab = extent_heap_remove_first(&bin->slabs_nonfull)) !=
 		    NULL) {
 			malloc_mutex_unlock(tsd_tsdn(tsd), &bin->lock);
-			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab);
+			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab, bin_info);
 			malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);
 		}
 		for (slab = extent_list_first(&bin->slabs_full); slab != NULL;
 		    slab = extent_list_first(&bin->slabs_full)) {
 			arena_bin_slabs_full_remove(arena, bin, slab);
 			malloc_mutex_unlock(tsd_tsdn(tsd), &bin->lock);
-			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab);
+			arena_slab_dalloc(tsd_tsdn(tsd), arena, slab, bin_info);
 			malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);
 		}
 		if (config_stats) {
@@ -1176,6 +1212,10 @@ arena_slab_alloc(tsdn_t *tsdn, arena_t *arena, szind_t binind,
 	}
 	assert(extent_slab_get(slab));
 
+	/* Swap out the extent_t for one with the appropriately sized bitmap. */
+	slab = arena_slab_swap_extents(tsdn, arena, slab, extent_class_small,
+	           bin_info->extent_class);
+
 	/* Initialize slab internals. */
 	bitmap_t *bitmap = extent_slab_data_get(slab);
 	extent_nfree_set(slab, bin_info->nregs);
@@ -1261,7 +1301,7 @@ arena_bin_malloc_hard(tsdn_t *tsdn, arena_t *arena, bin_t *bin,
 				 */
 				if (extent_nfree_get(slab) == bin_info->nregs) {
 					arena_dalloc_bin_slab(tsdn, arena, slab,
-					    bin);
+					    bin, bin_info);
 				} else {
 					arena_bin_lower_slab(tsdn, arena, slab,
 					    bin);
@@ -1524,12 +1564,12 @@ arena_dissociate_bin_slab(arena_t *arena, extent_t *slab, bin_t *bin) {
 
 static void
 arena_dalloc_bin_slab(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
-    bin_t *bin) {
+    bin_t *bin, const bin_info_t *bin_info) {
 	assert(slab != bin->slabcur);
 
 	malloc_mutex_unlock(tsdn, &bin->lock);
 	/******************************/
-	arena_slab_dalloc(tsdn, arena, slab);
+	arena_slab_dalloc(tsdn, arena, slab, bin_info);
 	/****************************/
 	malloc_mutex_lock(tsdn, &bin->lock);
 	if (config_stats) {
@@ -1580,7 +1620,7 @@ arena_dalloc_bin_locked_impl(tsdn_t *tsdn, arena_t *arena, extent_t *slab,
 	unsigned nfree = extent_nfree_get(slab);
 	if (nfree == bin_info->nregs) {
 		arena_dissociate_bin_slab(arena, slab, bin);
-		arena_dalloc_bin_slab(tsdn, arena, slab, bin);
+		arena_dalloc_bin_slab(tsdn, arena, slab, bin, bin_info);
 	} else if (nfree == 1 && slab != bin->slabcur) {
 		arena_bin_slabs_full_remove(arena, bin, slab);
 		arena_bin_lower_slab(tsdn, arena, slab, bin);

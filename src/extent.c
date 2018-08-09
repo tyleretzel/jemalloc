@@ -183,7 +183,7 @@ extent_alloc(tsdn_t *tsdn, arena_t *arena, extent_class_t class) {
 	extent_t *extent = extent_avail_first(&arena->extent_avail[class]);
 	if (extent == NULL) {
 		malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
-		return base_alloc_extent(tsdn, arena->base, extent_class_small);
+		return base_alloc_extent(tsdn, arena->base, class);
 	}
 	extent_avail_remove(&arena->extent_avail[class], extent);
 	atomic_fetch_sub_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
@@ -816,7 +816,7 @@ extent_register(tsdn_t *tsdn, extent_t *extent) {
 	return extent_register_impl(tsdn, extent, true);
 }
 
-static bool
+bool
 extent_register_no_gdump_add(tsdn_t *tsdn, extent_t *extent) {
 	return extent_register_impl(tsdn, extent, false);
 }
@@ -879,7 +879,7 @@ extent_deregister(tsdn_t *tsdn, extent_t *extent) {
 	extent_deregister_impl(tsdn, extent, true);
 }
 
-static void
+void
 extent_deregister_no_gdump_sub(tsdn_t *tsdn, extent_t *extent) {
 	extent_deregister_impl(tsdn, extent, false);
 }

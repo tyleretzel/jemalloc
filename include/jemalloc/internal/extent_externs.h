@@ -72,6 +72,8 @@ extent_t *extent_split_wrapper(tsdn_t *tsdn, arena_t *arena,
     szind_t szind_a, bool slab_a, size_t size_b, szind_t szind_b, bool slab_b);
 bool extent_merge_wrapper(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, extent_t *a, extent_t *b);
+bool extent_register_no_gdump_add(tsdn_t *tsdn, extent_t *extent);
+void extent_deregister_no_gdump_sub(tsdn_t *tsdn, extent_t *extent);
 
 bool extent_boot(void);
 
