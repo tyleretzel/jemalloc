@@ -43,9 +43,10 @@ struct extent_s {
 	 * t: state
 	 * i: szind
 	 * f: nfree
+	 * t: class
 	 * n: sn
 	 *
-	 * nnnnnnnn ... nnnfffff ffffffii iiiiiitt zdcbaaaa aaaaaaaa
+	 * nnnnnnnn ... tttfffff ffffffii iiiiiitt zdcbaaaa aaaaaaaa
 	 *
 	 * arena_ind: Arena from which this extent came, or all 1 bits if
 	 *            unassociated.
@@ -135,7 +136,11 @@ struct extent_s {
 #define EXTENT_BITS_NFREE_SHIFT  (EXTENT_BITS_SZIND_WIDTH + EXTENT_BITS_SZIND_SHIFT)
 #define EXTENT_BITS_NFREE_MASK  MASK(EXTENT_BITS_NFREE_WIDTH, EXTENT_BITS_NFREE_SHIFT)
 
-#define EXTENT_BITS_SN_SHIFT  (EXTENT_BITS_NFREE_WIDTH + EXTENT_BITS_NFREE_SHIFT)
+#define EXTENT_BITS_CLASS_WIDTH  3
+#define EXTENT_BITS_CLASS_SHIFT  (EXTENT_BITS_NFREE_WIDTH + EXTENT_BITS_NFREE_SHIFT)
+#define EXTENT_BITS_CLASS_MASK  MASK(EXTENT_BITS_CLASS_WIDTH, EXTENT_BITS_CLASS_SHIFT)
+
+#define EXTENT_BITS_SN_SHIFT  (EXTENT_BITS_CLASS_WIDTH + EXTENT_BITS_CLASS_SHIFT)
 #define EXTENT_BITS_SN_MASK  (UINT64_MAX << EXTENT_BITS_SN_SHIFT)
 
 	/* Pointer to the extent that this structure is responsible for. */

@@ -113,6 +113,12 @@ extent_nfree_get(const extent_t *extent) {
 	    EXTENT_BITS_NFREE_SHIFT);
 }
 
+static inline extent_class_t
+extent_class_get(const extent_t *extent) {
+	return (unsigned)((extent->e_bits & EXTENT_BITS_CLASS_MASK) >>
+	    EXTENT_BITS_CLASS_SHIFT);
+}
+
 static inline void *
 extent_base_get(const extent_t *extent) {
 	assert(extent->e_addr == PAGE_ADDR2BASE(extent->e_addr) ||
@@ -274,6 +280,13 @@ extent_nfree_dec(extent_t *extent) {
 	assert(extent_slab_get(extent));
 	extent->e_bits -= ((uint64_t)1U << EXTENT_BITS_NFREE_SHIFT);
 }
+
+static inline void
+extent_class_set(extent_t *extent, extent_class_t class) {
+	extent->e_bits = (extent->e_bits & ~EXTENT_BITS_CLASS_MASK) |
+	    ((uint64_t)class << EXTENT_BITS_CLASS_SHIFT);
+}
+
 
 static inline void
 extent_sn_set(extent_t *extent, size_t sn) {

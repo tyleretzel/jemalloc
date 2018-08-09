@@ -956,7 +956,12 @@ arena_slab_swap_extents(tsdn_t *tsdn, arena_t *arena,
 	// TODO handle NULL case
 	extent_t *req_extent = extent_alloc(tsdn, arena, req_class);
 	/* Copy metadata. */
-	memcpy(req_extent, cur_extent, sizeof(extent_t));
+
+	extent_init(req_extent, arena, extent_addr_get(cur_extent),
+	    extent_size_get(cur_extent), extent_slab_get(cur_extent),
+	    extent_szind_get(cur_extent), arena_extent_sn_next(arena),
+	    extent_state_active, extent_zeroed_get(cur_extent),
+	    extent_committed_get(cur_extent), extent_dumpable_get(cur_extent));
 
 	/* Remove cur_extent from the rtree and replace it with req_extent. */
 

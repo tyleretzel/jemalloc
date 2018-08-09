@@ -183,7 +183,9 @@ extent_alloc(tsdn_t *tsdn, arena_t *arena, extent_class_t class) {
 	extent_t *extent = extent_avail_first(&arena->extent_avail[class]);
 	if (extent == NULL) {
 		malloc_mutex_unlock(tsdn, &arena->extent_avail_mtx);
-		return base_alloc_extent(tsdn, arena->base, class);
+		extent = base_alloc_extent(tsdn, arena->base, class);
+		extent_class_set(extent, class);
+		return extent;
 	}
 	extent_avail_remove(&arena->extent_avail[class], extent);
 	atomic_fetch_sub_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
@@ -194,6 +196,7 @@ extent_alloc(tsdn_t *tsdn, arena_t *arena, extent_class_t class) {
 void
 extent_dalloc(tsdn_t *tsdn, arena_t *arena, extent_t *extent,
     extent_class_t class) {
+	assert(extent_class_get(extent) == class);
 	malloc_mutex_lock(tsdn, &arena->extent_avail_mtx);
 	extent_avail_insert(&arena->extent_avail[class], extent);
 	atomic_fetch_add_zu(&arena->extent_avail_cnt[class], 1, ATOMIC_RELAXED);
