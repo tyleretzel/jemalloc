@@ -13,6 +13,9 @@
 /* Number of event ticks between time checks. */
 #define DECAY_NTICKS_PER_UPDATE	1000
 
+#define DIRTY_CACHE_MAX_PIND_DEFAULT 0
+#define DIRTY_NCACHED_MAX_DEFAULT 10
+
 typedef struct arena_slab_data_s arena_slab_data_t;
 typedef struct arena_decay_s arena_decay_t;
 typedef struct arena_s arena_t;

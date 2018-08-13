@@ -227,9 +227,6 @@ extent_hooks_assure_initialized(arena_t *arena,
 	}
 }
 
-#ifndef JEMALLOC_JET
-static
-#endif
 size_t
 extent_size_quantize_floor(size_t size) {
 	size_t ret;
@@ -253,9 +250,6 @@ extent_size_quantize_floor(size_t size) {
 	return ret;
 }
 
-#ifndef JEMALLOC_JET
-static
-#endif
 size_t
 extent_size_quantize_ceil(size_t size) {
 	size_t ret;

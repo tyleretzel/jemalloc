@@ -148,6 +148,7 @@ struct extent_s {
 	 * - extents_t's LRU
 	 * - stashed dirty extents
 	 * - arena's large allocations
+	 * - dirty extent cache
 	 */
 	ql_elm(extent_t)	ql_link;
 

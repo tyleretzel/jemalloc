@@ -19,6 +19,9 @@ extern malloc_mutex_t arenas_lock;
 extern size_t opt_huge_threshold;
 extern size_t huge_threshold;
 
+extern ssize_t opt_dirty_cache_max_pind;
+extern size_t opt_dirty_ncached_max;
+
 void arena_basic_stats_merge(tsdn_t *tsdn, arena_t *arena,
     unsigned *nthreads, const char **dss, ssize_t *dirty_decay_ms,
     ssize_t *muzzy_decay_ms, size_t *nactive, size_t *ndirty, size_t *nmuzzy);

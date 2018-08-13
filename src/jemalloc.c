@@ -1166,6 +1166,10 @@ malloc_conf_init(sc_data_t *sc_data) {
 			    "muzzy_decay_ms", -1, NSTIME_SEC_MAX * KQU(1000) <
 			    QU(SSIZE_MAX) ? NSTIME_SEC_MAX * KQU(1000) :
 			    SSIZE_MAX);
+			CONF_HANDLE_SSIZE_T(opt_dirty_cache_max_pind,
+			    "dirty_cache_max_pind", -1, SC_NPSIZES);
+			CONF_HANDLE_SIZE_T(opt_dirty_ncached_max,
+			    "dirty_ncached_max", 0, SIZE_MAX, yes, yes, false);
 			CONF_HANDLE_BOOL(opt_stats_print, "stats_print")
 			if (CONF_MATCH("stats_print_opts")) {
 				init_opt_stats_print_opts(v, vlen);

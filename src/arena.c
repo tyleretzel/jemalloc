@@ -47,6 +47,9 @@ size_t opt_huge_threshold = HUGE_THRESHOLD_DEFAULT;
 size_t huge_threshold = HUGE_THRESHOLD_DEFAULT;
 static unsigned huge_arena_ind;
 
+ssize_t opt_dirty_cache_max_pind = DIRTY_CACHE_MAX_PIND_DEFAULT;
+size_t opt_dirty_ncached_max = DIRTY_NCACHED_MAX_DEFAULT;
+
 /******************************************************************************/
 /*
  * Function prototypes for static functions that are referenced prior to
@@ -237,6 +240,11 @@ arena_stats_merge(tsdn_t *tsdn, arena_t *arena, unsigned *nthreads,
 	}
 }
 
+static bool
+arena_may_have_muzzy(arena_t *arena) {
+	return (pages_can_purge_lazy && (arena_muzzy_decay_ms_get(arena) != 0));
+}
+
 void
 arena_extents_dirty_dalloc(tsdn_t *tsdn, arena_t *arena,
     extent_hooks_t **r_extent_hooks, extent_t *extent) {
@@ -250,6 +258,83 @@ arena_extents_dirty_dalloc(tsdn_t *tsdn, arena_t *arena,
 	} else {
 		arena_background_thread_inactivity_check(tsdn, arena, false);
 	}
+}
+
+static void
+arena_dirty_cache_add(tsdn_t *tsdn, arena_t *arena,
+    extent_hooks_t **r_extent_hooks, extent_t *extent) {
+	extent_t *removed = NULL;
+
+	size_t size = extent_size_get(extent);
+	size_t psz = extent_size_quantize_floor(size);
+	pszind_t pind = sz_psz2ind(psz);
+
+	malloc_mutex_lock(tsdn, &arena->dirty_cache_mtx);
+	if (atomic_load_zu(&arena->dirty_cache_nextents[pind], ATOMIC_RELAXED)
+	    < opt_dirty_ncached_max) {
+		ql_head_insert(&arena->dirty_cache[pind], extent, ql_link);
+		atomic_fetch_add_zu(&arena->dirty_cache_nextents[pind], 1,
+		    ATOMIC_RELAXED);
+	} else {
+		removed = ql_last(&arena->dirty_cache[pind], ql_link);
+		ql_tail_remove(&arena->dirty_cache[pind], extent_t, ql_link);
+		ql_head_insert(&arena->dirty_cache[pind], extent, ql_link);
+	}
+	malloc_mutex_unlock(tsdn, &arena->dirty_cache_mtx);
+
+	if (removed != NULL) {
+		arena_extents_dirty_dalloc(tsdn, arena, r_extent_hooks,
+		    removed);
+	}
+}
+
+static void
+arena_dirty_cache_fill(tsdn_t *tsdn, arena_t *arena,
+    extent_hooks_t **r_extent_hooks, pszind_t pind) {
+	while (atomic_load_zu(&arena->dirty_cache_nextents[pind],
+	    ATOMIC_RELAXED) < opt_dirty_ncached_max) {
+		size_t sz = sz_pind2sz(pind);
+		size_t szind = sz_size2index(sz);
+		bool zero = false;
+		bool commit = true;
+		extent_t *extent = extents_alloc(tsdn, arena, r_extent_hooks,
+		    &arena->extents_dirty, NULL, sz, 0, PAGE, false, szind,
+		    &zero, &commit);
+		if (extent == NULL && arena_may_have_muzzy(arena)) {
+			extent = extents_alloc(tsdn, arena, r_extent_hooks,
+			    &arena->extents_muzzy, NULL, sz, 0, PAGE, false,
+			    szind, &zero, &commit);
+		}
+		if (extent == NULL) {
+			extent = extent_alloc_wrapper(tsdn, arena,
+			    r_extent_hooks, NULL, sz, 0, PAGE, false, szind,
+			    &zero, &commit);
+		}
+		arena_dirty_cache_add(tsdn, arena, r_extent_hooks, extent);
+	}
+}
+
+static extent_t *
+arena_dirty_cache_remove(tsdn_t *tsdn, arena_t *arena,
+   extent_hooks_t **r_extent_hooks, pszind_t pind) {
+	if ((ssize_t)pind > opt_dirty_cache_max_pind) {
+		return NULL; 
+	}
+
+	malloc_mutex_lock(tsdn, &arena->dirty_cache_mtx);
+	while (atomic_load_zu(&arena->dirty_cache_nextents[pind],
+	    ATOMIC_RELAXED) == 0) {
+		malloc_mutex_unlock(tsdn, &arena->dirty_cache_mtx);
+		arena_dirty_cache_fill(tsdn, arena, r_extent_hooks, pind);
+		malloc_mutex_lock(tsdn, &arena->dirty_cache_mtx);
+	}
+	atomic_fetch_sub_zu(&arena->dirty_cache_nextents[pind], 1,
+	    ATOMIC_RELAXED);
+	extent_t *extent = ql_first(&arena->dirty_cache[pind]);
+	ql_head_remove(&arena->dirty_cache[pind], extent_t, ql_link);
+	malloc_mutex_unlock(tsdn, &arena->dirty_cache_mtx);
+
+	return extent;
 }
 
 static void *
@@ -354,11 +439,6 @@ arena_large_ralloc_stats_update(tsdn_t *tsdn, arena_t *arena, size_t oldusize,
     size_t usize) {
 	arena_large_dalloc_stats_update(tsdn, arena, oldusize);
 	arena_large_malloc_stats_update(tsdn, arena, usize);
-}
-
-static bool
-arena_may_have_muzzy(arena_t *arena) {
-	return (pages_can_purge_lazy && (arena_muzzy_decay_ms_get(arena) != 0));
 }
 
 extent_t *
@@ -1943,6 +2023,19 @@ arena_new(tsdn_t *tsdn, unsigned ind, extent_hooks_t *extent_hooks) {
 		if (err) {
 			goto label_error;
 		}
+	}
+
+	/* Mutex for dirty cache. */
+	if (malloc_mutex_init(&arena->dirty_cache_mtx, "dirty_cache",
+	    WITNESS_RANK_EXTENTS, malloc_mutex_rank_exclusive)) {
+		goto label_error;
+	}
+
+	/* Initialize dirty extent cache. */
+	for (i = 0; i < SC_NPSIZES; i++) {
+		atomic_store_zu(&arena->dirty_cache_nextents[i], 0,
+		    ATOMIC_RELAXED);
+		extent_list_init(&arena->dirty_cache[i]);
 	}
 
 	arena->base = base;

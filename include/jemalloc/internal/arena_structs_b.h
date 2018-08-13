@@ -214,6 +214,14 @@ struct arena_s {
 	base_t			*base;
 	/* Used to determine uptime.  Read-only after initialization. */
 	nstime_t		create_time;
+
+	/* 
+	 * Caches page-aligned extents. Only some of these caches will be used,
+	 * based on the value of opt_dirty_cache_max_pind.
+	 */
+	malloc_mutex_t		dirty_cache_mtx;
+	atomic_zu_t		dirty_cache_nextents[SC_NPSIZES];
+	extent_list_t		dirty_cache[SC_NPSIZES];
 };
 
 /* Used in conjunction with tsd for fast arena-related context lookup. */
