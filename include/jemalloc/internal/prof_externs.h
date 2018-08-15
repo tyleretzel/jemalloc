@@ -44,8 +44,8 @@ extern uint64_t	prof_interval;
 extern size_t	lg_prof_sample;
 
 void prof_alloc_rollback(tsd_t *tsd, prof_tctx_t *tctx, bool updated);
-void prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
-    prof_tctx_t *tctx);
+void prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t size,
+    size_t usize, prof_tctx_t *tctx);
 void prof_free_sampled_object(tsd_t *tsd, const void *ptr, size_t usize,
     prof_tctx_t *tctx);
 void bt_init(prof_bt_t *bt, void **vec);

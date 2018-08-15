@@ -2019,7 +2019,8 @@ imalloc_body(static_opts_t *sopts, dynamic_opts_t *dopts, tsd_t *tsd) {
 			prof_alloc_rollback(tsd, tctx, true);
 			goto label_oom;
 		}
-		prof_malloc(tsd_tsdn(tsd), allocation, usize, &alloc_ctx, tctx);
+		prof_malloc(tsd_tsdn(tsd), allocation, size, usize, &alloc_ctx,
+		    tctx);
 	} else {
 		/*
 		 * If dopts->alignment > 0, then ind is still 0, but usize was
@@ -2314,8 +2315,8 @@ irealloc_prof_sample(tsd_t *tsd, void *old_ptr, size_t old_usize, size_t usize,
 }
 
 JEMALLOC_ALWAYS_INLINE void *
-irealloc_prof(tsd_t *tsd, void *old_ptr, size_t old_usize, size_t usize,
-   alloc_ctx_t *alloc_ctx, hook_ralloc_args_t *hook_args) {
+irealloc_prof(tsd_t *tsd, void *old_ptr, size_t old_usize, size_t size,
+    size_t usize, alloc_ctx_t *alloc_ctx, hook_ralloc_args_t *hook_args) {
 	void *p;
 	bool prof_active;
 	prof_tctx_t *old_tctx, *tctx;
@@ -2334,8 +2335,8 @@ irealloc_prof(tsd_t *tsd, void *old_ptr, size_t old_usize, size_t usize,
 		prof_alloc_rollback(tsd, tctx, true);
 		return NULL;
 	}
-	prof_realloc(tsd, p, usize, tctx, prof_active, true, old_ptr, old_usize,
-	    old_tctx);
+	prof_realloc(tsd, p, size, usize, tctx, prof_active, true, old_ptr,
+	    old_usize, old_tctx);
 
 	return p;
 }
@@ -2493,8 +2494,8 @@ je_realloc(void *ptr, size_t arg_size) {
 			    || usize > SC_LARGE_MAXCLASS)) {
 				ret = NULL;
 			} else {
-				ret = irealloc_prof(tsd, ptr, old_usize, usize,
-				    &alloc_ctx, &hook_args);
+				ret = irealloc_prof(tsd, ptr, old_usize, size,
+				    usize, &alloc_ctx, &hook_args);
 			}
 		} else {
 			if (config_stats) {
@@ -2853,7 +2854,7 @@ irallocx_prof(tsd_t *tsd, void *old_ptr, size_t old_usize, size_t size,
 		 */
 		*usize = isalloc(tsd_tsdn(tsd), p);
 	}
-	prof_realloc(tsd, p, *usize, tctx, prof_active, false, old_ptr,
+	prof_realloc(tsd, p, size, *usize, tctx, prof_active, false, old_ptr,
 	    old_usize, old_tctx);
 
 	return p;
@@ -3029,8 +3030,8 @@ ixallocx_prof(tsd_t *tsd, void *ptr, size_t old_usize, size_t size,
 		prof_alloc_rollback(tsd, tctx, false);
 		return usize;
 	}
-	prof_realloc(tsd, ptr, usize, tctx, prof_active, false, ptr, old_usize,
-	    old_tctx);
+	prof_realloc(tsd, ptr, size, usize, tctx, prof_active, false, ptr,
+	    old_usize, old_tctx);
 
 	return usize;
 }

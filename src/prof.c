@@ -144,6 +144,7 @@ struct prof_alloc_node_s {
 	uint64_t free_time_ns;
 
 	size_t usize;
+	size_t size;
 };
 
 /*
@@ -340,15 +341,16 @@ prof_alloc_rollback(tsd_t *tsd, prof_tctx_t *tctx, bool updated) {
 }
 
 void
-prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t usize,
-    prof_tctx_t *tctx) {
+prof_malloc_sample_object(tsdn_t *tsdn, const void *ptr, size_t size,
+    size_t usize, prof_tctx_t *tctx) {
 	prof_tctx_set(tsdn, ptr, usize, NULL, tctx);
 
 	/* Get the current time and set this in the extent_t. We'll read this
 	 * when free() is called. */
 	nstime_t t = NSTIME_ZERO_INITIALIZER;
 	nstime_update(&t);
-	prof_alloc_time_set(tsdn, ptr, NULL, t);
+	prof_alloc_time_set(tsdn, ptr, nstime_ns(&t));
+	prof_requested_size_set(tsdn, ptr, size);
 
 	malloc_mutex_lock(tsdn, tctx->tdata->lock);
 	tctx->cnts.curobjs++;
@@ -469,10 +471,11 @@ prof_try_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 		log_tables_initialized = true;
 	}
 
-	nstime_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr,
-			          (alloc_ctx_t *)NULL);
-	nstime_t free_time = NSTIME_ZERO_INITIALIZER;
-	nstime_update(&free_time);
+	uint64_t alloc_time = prof_alloc_time_get(tsd_tsdn(tsd), ptr);
+
+	nstime_t free_time_ns = NSTIME_ZERO_INITIALIZER;
+	nstime_update(&free_time_ns);
+	uint64_t free_time = nstime_ns(&free_time_ns);
 
 	prof_alloc_node_t *new_node = (prof_alloc_node_t *)
 		ialloc(tsd, sizeof(prof_alloc_node_t),
@@ -498,9 +501,10 @@ prof_try_log(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx) {
 				     cons_thr_name);
 	new_node->alloc_bt_ind = prof_log_bt_index(tsd, prod_bt);
 	new_node->free_bt_ind = prof_log_bt_index(tsd, cons_bt);
-	new_node->alloc_time_ns = nstime_ns(&alloc_time);
-	new_node->free_time_ns = nstime_ns(&free_time);
+	new_node->alloc_time_ns = alloc_time;
+	new_node->free_time_ns = free_time;
 	new_node->usize = usize;
+	new_node->size = prof_requested_size_get(tsd_tsdn(tsd), ptr);
 
 	if (log_alloc_first == NULL) {
 		log_alloc_first = new_node;
@@ -2650,8 +2654,11 @@ prof_log_emit_allocs(tsd_t *tsd, emitter_t *emitter) {
 		emitter_json_kv(emitter, "free_timestamp", emitter_type_uint64,
 		    &alloc_node->free_time_ns);
 
-		emitter_json_kv(emitter, "usize", emitter_type_uint64,
+		emitter_json_kv(emitter, "usize", emitter_type_size,
 		    &alloc_node->usize);
+
+		emitter_json_kv(emitter, "size", emitter_type_size,
+		    &alloc_node->size);
 
 		emitter_json_object_end(emitter);
 

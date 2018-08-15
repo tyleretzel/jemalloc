@@ -171,17 +171,6 @@ extent_slab_data_get_const(const extent_t *extent) {
 	return &extent->e_slab_data;
 }
 
-static inline prof_tctx_t *
-extent_prof_tctx_get(const extent_t *extent) {
-	return (prof_tctx_t *)atomic_load_p(&extent->e_prof_tctx,
-	    ATOMIC_ACQUIRE);
-}
-
-static inline nstime_t
-extent_prof_alloc_time_get(const extent_t *extent) {
-	return extent->e_alloc_time;
-}
-
 static inline void
 extent_arena_set(extent_t *extent, arena_t *arena) {
 	unsigned arena_ind = (arena != NULL) ? arena_ind_get(arena) : ((1U <<
@@ -300,14 +289,49 @@ extent_slab_set(extent_t *extent, bool slab) {
 	    ((uint64_t)slab << EXTENT_BITS_SLAB_SHIFT);
 }
 
+/* Functions to get/set profiling data. */
+
 static inline void
 extent_prof_tctx_set(extent_t *extent, prof_tctx_t *tctx) {
-	atomic_store_p(&extent->e_prof_tctx, tctx, ATOMIC_RELEASE);
+	atomic_store_p(&extent->e_prof_data.prof_tctx, tctx, ATOMIC_RELEASE);
+}
+
+static inline prof_tctx_t *
+extent_prof_tctx_get(const extent_t *extent) {
+	return (prof_tctx_t *)atomic_load_p(&extent->e_prof_data.prof_tctx,
+	    ATOMIC_ACQUIRE);
 }
 
 static inline void
-extent_prof_alloc_time_set(extent_t *extent, nstime_t t) {
-	nstime_copy(&extent->e_alloc_time, &t);
+extent_prof_alloc_time_set(extent_t *extent, uint64_t t) {
+#ifdef JEMALLOC_ATOMIC_U64
+	atomic_store_u64(&extent->e_prof_data.alloc_time, t, ATOMIC_RELEASE);
+#else
+	atomic_store_zu(&extent->e_prof_data.alloc_time, (size_t)t,
+	    ATOMIC_RELEASE);
+#endif
+}
+
+static inline uint64_t
+extent_prof_alloc_time_get(const extent_t *extent) {
+#ifdef JEMALLOC_ATOMIC_U64
+	return atomic_load_u64(&extent->e_prof_data.alloc_time, ATOMIC_ACQUIRE);
+#else
+	return (uint64_t)atomic_load_zu(&extent->e_prof_data.alloc_time,
+	    ATOMIC_ACQUIRE);
+#endif
+}
+
+static inline void
+extent_requested_size_set(extent_t *extent, size_t sz) {
+	atomic_store_zu(&extent->e_prof_data.requested_size, sz,
+	    ATOMIC_RELEASE);
+}
+
+static inline size_t
+extent_requested_size_get(const extent_t *extent) {
+	return atomic_load_zu(&extent->e_prof_data.requested_size,
+	    ATOMIC_ACQUIRE);
 }
 
 static inline void

@@ -16,6 +16,23 @@ typedef enum {
 	extent_state_retained = 3
 } extent_state_t;
 
+struct extent_prof_data_s {
+	/* Points to a prof_tctx_t. */
+	atomic_p_t		prof_tctx;
+	/* Requested size of the allocation (not necessarily a size class). */
+	atomic_zu_t		requested_size;
+
+	/*
+	 * Time when this was allocated. Try to use a 64 bit integer, resort
+	 * to size_t otherwise.
+	 */
+#ifdef JEMALLOC_ATOMIC_U64
+	atomic_u64_t		alloc_time;
+#else
+	atomic_zu_t		alloc_time;
+#endif
+};
+
 /* Extent (span of pages).  Use accessor functions for e_* fields. */
 struct extent_s {
 	/*
@@ -161,13 +178,9 @@ struct extent_s {
 		/* Small region slab metadata. */
 		arena_slab_data_t	e_slab_data;
 
+
 		/* Profiling data, used for large objects. */
-		struct {
-			/* Time when this was allocated. */
-			nstime_t		e_alloc_time;
-			/* Points to a prof_tctx_t. */
-			atomic_p_t		e_prof_tctx;
-		};
+		extent_prof_data_t	e_prof_data;
 	};
 };
 typedef ql_head(extent_t) extent_list_t;

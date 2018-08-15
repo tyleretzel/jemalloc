@@ -41,7 +41,18 @@ prof_tctx_get(tsdn_t *tsdn, const void *ptr, alloc_ctx_t *alloc_ctx) {
 	cassert(config_prof);
 	assert(ptr != NULL);
 
-	return arena_prof_tctx_get(tsdn, ptr, alloc_ctx);
+	/* Static check. */
+	if (alloc_ctx == NULL) {
+		const extent_t *extent = iealloc(tsdn, ptr);
+		if (unlikely(!extent_slab_get(extent))) {
+			return extent_prof_tctx_get(extent);
+		}
+	} else {
+		if (unlikely(!alloc_ctx->slab)) {
+			return extent_prof_tctx_get(iealloc(tsdn, ptr));
+		}
+	}
+	return (prof_tctx_t *)(uintptr_t)1U;
 }
 
 JEMALLOC_ALWAYS_INLINE void
@@ -50,7 +61,17 @@ prof_tctx_set(tsdn_t *tsdn, const void *ptr, size_t usize,
 	cassert(config_prof);
 	assert(ptr != NULL);
 
-	arena_prof_tctx_set(tsdn, ptr, usize, alloc_ctx, tctx);
+	/* Static check. */
+	if (alloc_ctx == NULL) {
+		extent_t *extent = iealloc(tsdn, ptr);
+		if (unlikely(!extent_slab_get(extent))) {
+			extent_prof_tctx_set(extent, tctx);
+		}
+	} else {
+		if (unlikely(!alloc_ctx->slab)) {
+			extent_prof_tctx_set(iealloc(tsdn, ptr), tctx);
+		}
+	}
 }
 
 JEMALLOC_ALWAYS_INLINE void
@@ -58,24 +79,58 @@ prof_tctx_reset(tsdn_t *tsdn, const void *ptr, prof_tctx_t *tctx) {
 	cassert(config_prof);
 	assert(ptr != NULL);
 
-	arena_prof_tctx_reset(tsdn, ptr, tctx);
+	extent_t *extent = iealloc(tsdn, ptr);
+	assert(!extent_slab_get(extent));
+
+	extent_prof_tctx_set(iealloc(tsdn, ptr), (prof_tctx_t *)(uintptr_t)1U);
 }
 
-JEMALLOC_ALWAYS_INLINE nstime_t
-prof_alloc_time_get(tsdn_t *tsdn, const void *ptr, alloc_ctx_t *alloc_ctx) {
+JEMALLOC_ALWAYS_INLINE uint64_t
+prof_alloc_time_get(tsdn_t *tsdn, const void *ptr) {
 	cassert(config_prof);
 	assert(ptr != NULL);
 
-	return arena_prof_alloc_time_get(tsdn, ptr, alloc_ctx);
+	extent_t *extent = iealloc(tsdn, ptr);
+	/*
+	 * Unlike arena_prof_prof_tctx_{get, set}, we only call this once we're
+	 * sure we have a sampled allocation.
+	 */
+	assert(!extent_slab_get(extent));
+	return extent_prof_alloc_time_get(extent);
 }
 
 JEMALLOC_ALWAYS_INLINE void
-prof_alloc_time_set(tsdn_t *tsdn, const void *ptr, alloc_ctx_t *alloc_ctx,
-    nstime_t t) { 
+prof_alloc_time_set(tsdn_t *tsdn, const void *ptr, uint64_t t) {
 	cassert(config_prof);
 	assert(ptr != NULL);
 
-	arena_prof_alloc_time_set(tsdn, ptr, alloc_ctx, t);
+	extent_t *extent = iealloc(tsdn, ptr);
+	assert(!extent_slab_get(extent));
+	extent_prof_alloc_time_set(extent, t);
+}
+
+JEMALLOC_ALWAYS_INLINE size_t
+prof_requested_size_get(tsdn_t *tsdn, const void *ptr) {
+	cassert(config_prof);
+	assert(ptr != NULL);
+
+	extent_t *extent = iealloc(tsdn, ptr);
+
+	assert(!extent_slab_get(extent));
+
+	return extent_requested_size_get(extent);
+}
+
+JEMALLOC_ALWAYS_INLINE void
+prof_requested_size_set(tsdn_t *tsdn, const void *ptr, size_t sz) {
+	cassert(config_prof);
+	assert(ptr != NULL);
+
+	extent_t *extent = iealloc(tsdn, ptr);
+
+	assert(!extent_slab_get(extent));
+
+	extent_requested_size_set(extent, sz);
 }
 
 JEMALLOC_ALWAYS_INLINE bool
@@ -136,14 +191,14 @@ prof_alloc_prep(tsd_t *tsd, size_t usize, bool prof_active, bool update) {
 }
 
 JEMALLOC_ALWAYS_INLINE void
-prof_malloc(tsdn_t *tsdn, const void *ptr, size_t usize, alloc_ctx_t *alloc_ctx,
-    prof_tctx_t *tctx) {
+prof_malloc(tsdn_t *tsdn, const void *ptr, size_t size, size_t usize,
+    alloc_ctx_t *alloc_ctx, prof_tctx_t *tctx) {
 	cassert(config_prof);
 	assert(ptr != NULL);
 	assert(usize == isalloc(tsdn, ptr));
 
 	if (unlikely((uintptr_t)tctx > (uintptr_t)1U)) {
-		prof_malloc_sample_object(tsdn, ptr, usize, tctx);
+		prof_malloc_sample_object(tsdn, ptr, size, usize, tctx);
 	} else {
 		prof_tctx_set(tsdn, ptr, usize, alloc_ctx,
 		    (prof_tctx_t *)(uintptr_t)1U);
@@ -151,8 +206,9 @@ prof_malloc(tsdn_t *tsdn, const void *ptr, size_t usize, alloc_ctx_t *alloc_ctx,
 }
 
 JEMALLOC_ALWAYS_INLINE void
-prof_realloc(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx,
-    bool prof_active, bool updated, const void *old_ptr, size_t old_usize,
+prof_realloc(tsd_t *tsd, const void *ptr, size_t size, size_t usize,
+    prof_tctx_t *tctx, bool prof_active, bool updated, const void *old_ptr,
+    size_t old_usize,
     prof_tctx_t *old_tctx) {
 	bool sampled, old_sampled, moved;
 
@@ -179,7 +235,8 @@ prof_realloc(tsd_t *tsd, const void *ptr, size_t usize, prof_tctx_t *tctx,
 	moved = (ptr != old_ptr);
 
 	if (unlikely(sampled)) {
-		prof_malloc_sample_object(tsd_tsdn(tsd), ptr, usize, tctx);
+		prof_malloc_sample_object(tsd_tsdn(tsd), ptr, size, usize,
+		    tctx);
 	} else if (moved) {
 		prof_tctx_set(tsd_tsdn(tsd), ptr, usize, NULL,
 		    (prof_tctx_t *)(uintptr_t)1U);

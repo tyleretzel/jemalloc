@@ -3,6 +3,7 @@
 
 typedef struct extent_s extent_t;
 typedef struct extents_s extents_t;
+typedef struct extent_prof_data_s extent_prof_data_t;
 
 #define EXTENT_HOOKS_INITIALIZER	NULL
 
